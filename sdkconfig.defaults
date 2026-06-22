@@ -1,0 +1,13 @@
+# ink_test_idf 默认配置
+# 首次 idf.py set-target / build 时会读这个文件生成 sdkconfig。
+
+# 目标芯片(对应原 arduino.json 的 esp32s3)
+CONFIG_IDF_TARGET="esp32s3"
+
+# ⚠️ arduino-esp32 硬性要求 FreeRTOS tick = 1000Hz,否则 CMake 阶段直接报错退出
+CONFIG_FREERTOS_HZ=1000
+
+# ESP32-S3 外扩 PSRAM(对应原 arduino.json 的 PSRAM=enabled)
+# 4.2 寸三色屏整屏缓冲较大,开启更稳妥。若你的模组是 8 线 PSRAM,改用 CONFIG_SPIRAM_MODE_HEX=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_USE_MALLOC=y

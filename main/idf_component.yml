@@ -1,0 +1,12 @@
+# arduino-esp32 通过 ESP Component Registry 自动拉取(不用手动 clone)
+# ⚠️ 版本必须和你装的 ESP-IDF 严格匹配,否则一定编译失败:
+#     ESP-IDF v5.5.x  ->  "3.3.8" 或更高(推荐 3.3.10,基于 IDF v5.5.4)
+#                         ※ 不要用 3.3.0!它与 IDF v5.5.4 的 adc_continuous_data_t
+#                           类型冲突,会报 "conflicting types" 编译错误。
+#     ESP-IDF v5.4.x  ->  "3.2.0"
+#     ESP-IDF v5.3.x  ->  "3.1.0"
+#     ESP-IDF v5.1.x  ->  "3.0.5"
+# 查 IDF 版本:idf.py --version
+dependencies:
+  espressif/arduino-esp32:
+    version: "3.3.10"  # ← 按上表改成和你 IDF 版本对应的那一行
