@@ -97,7 +97,7 @@ esp32-starboard/
 
 > 状态标记：⬜ 未开始 · 🔄 进行中 · ✅ 完成
 
-### 阶段 0：工程基础与第三方库  🔄
+### 阶段 0：工程基础与第三方库  ✅
 
 **目标**：搭好分区表、配置、引脚定义、第三方库，让工程能在新结构下编译通过。
 
@@ -250,6 +250,9 @@ esp32-starboard/
 - 2026-06-23 —— **二次 build 报错**：QRCode 库 `qrcode.c` 的 `#pragma mark`（Apple 专用 pragma）+ `type-limits` 被 IDF 默认 `-Werror=all` 升级为错误。
 - 2026-06-23 —— **三次 build 仍报错**：先试 `target_compile_options(... -Wno-error)` 不生效——GCC 里**裸 `-Wno-error` 压不住 `-Werror=<具体类型>`**（如 `-Werror=unknown-pragmas`）。**正确修法**：用 `-Wno-unknown-pragmas -Wno-type-limits` 等具体的 `-Wno-<type>`，从根上消除该警告（不依赖 `-Werror` 压制）。QRCode 已改用此法。⚠️ 教训：以后第三方库报 `[-Werror=xxx]`，一律用 `-Wno-xxx` 对症，别用裸 `-Wno-error`。
 - 2026-06-23 —— ✅ **阶段0 build 通过**（IDF v5.5.4 + arduino-esp32 3.3.10 + S3）。所有组件（starboard_config/OneButton/U8g2/QRCode/ArduinoJson/GxEPD2）编译成功。剩烧录验证：分区表已改，需 `erase-flash` 后重烧确认 hello-world 正常。
+- 2026-06-23 —— ✅ **阶段0 烧录验证通过**，hello-world 正常显示。阶段0 完成，提交 commit `ae8a7d7`。
+- 2026-06-23 —— **阶段1 启动（HAL）**。设计决策：`starboard_hal` **不依赖 display/gui**（保持底层纯粹），配网/关机等 UI 交互留给阶段3 App。分 6 个里程碑小步推进：M1 init+按键 / M2 配置+电压 / M3 WiFi / M4 NTP / M5 深睡 / M6 蜂鸣器。重要移植点：LiClock 的 Buzzer/hal 的 LEDC 调用是 arduino-esp32 **2.x API**（`ledcSetup`/`ledcAttachPin(pin,ch)`），3.x 已改（`ledcAttach(pin,freq)` / `ledcWriteTone(pin,...)`），蜂鸣器移植时必须适配。
+- 2026-06-23 —— **阶段1-M1 完成**（待编译验证）：`starboard_hal` 组件骨架 + `init()`（串口/时区/Preferences/按键轮询任务）+ OneButton 三键事件串口打印。main.cpp 调 `hal.init()`。
 
 ---
 

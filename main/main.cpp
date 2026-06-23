@@ -10,6 +10,7 @@
 #include <GxEPD2_3C.h>
 #include <Fonts/FreeMonoBold9pt7b.h>
 #include <starboard_config.h> // 阶段0:验证该组件能被 include
+#include <starboard_hal.h>    // 阶段1-M1:HAL init + 按键
 
 // 屏幕实例(引脚从 starboard_config 取)
 GxEPD2_3C<GxEPD2_420c_GDEY042Z98, GxEPD2_420c_GDEY042Z98::HEIGHT> display(
@@ -18,7 +19,7 @@ GxEPD2_3C<GxEPD2_420c_GDEY042Z98, GxEPD2_420c_GDEY042Z98::HEIGHT> display(
 void helloWorld()
 {
     const char str1[] = "Welcome to";
-    const char str2[] = "www.JokerIn.Icu!";
+    const char str2[] = "www.naidu.Icu!";
 
     display.setRotation(0);
     display.setFont(&FreeMonoBold9pt7b);
@@ -45,6 +46,7 @@ void helloWorld()
 
 void setup()
 {
+    hal.init(); // 阶段1-M1:HAL 初始化(串口/时区/Preferences/按键任务)
     display.init(115200); // 参数是串口日志波特率,会顺带初始化 Serial
     helloWorld();
     display.hibernate();  // 刷完进入深度休眠,省电
