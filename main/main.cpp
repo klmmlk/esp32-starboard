@@ -1,18 +1,19 @@
-// ESP-IDF 版墨水屏测试程序(由 ink_test.ino 改写)
-// 显示逻辑一字未动,只是:
-//   1) 加 <Arduino.h>
-//   2) 用 app_main() 套上 initArduino() + setup()/loop() 外壳
+// ESP-IDF 版墨水屏测试程序(阶段0 临时验证程序)
+// 阶段3 起本文件会改成 app_main → hal.init() → 起 appManager 任务,
+// 屏幕实例也会移到 starboard_display 组件。当前只为验证阶段0 的工程结构能编译。
 //
 // 引脚说明:CS=10 / SCK=12 / MOSI=11 / MISO=13 是 ESP32-S3 默认 SPI,
 // 和原 Arduino 工程完全一致,所以这里直接用默认 SPI 即可。
+// ⚠️ 引脚值统一从 starboard_config 取,改引脚只改那个头文件。
 
 #include <Arduino.h>
 #include <GxEPD2_3C.h>
 #include <Fonts/FreeMonoBold9pt7b.h>
+#include <starboard_config.h> // 阶段0:验证该组件能被 include
 
-// 屏幕实例(与原 .ino 完全一致)
+// 屏幕实例(引脚从 starboard_config 取)
 GxEPD2_3C<GxEPD2_420c_GDEY042Z98, GxEPD2_420c_GDEY042Z98::HEIGHT> display(
-    GxEPD2_420c_GDEY042Z98(/*CS=*/10, /*DC=*/8, /*RST=*/7, /*BUSY=*/9));
+    GxEPD2_420c_GDEY042Z98(/*CS=*/CONFIG_SPI_CS, /*DC=*/CONFIG_PIN_DC, /*RST=*/CONFIG_PIN_RST, /*BUSY=*/CONFIG_PIN_BUSY));
 
 void helloWorld()
 {

@@ -1,0 +1,27 @@
+# =============================================================================
+# esp32-starboard 自定义分区表
+#
+# 默认按 8MB Flash 规划(若你的 Flash 不同,等比调整 factory/ota/spiffs 大小)。
+# 布局: nvs / otadata / factory / ota_0 / ota_1 / spiffs(LittleFS)
+#   - factory: 出厂/首次烧录区
+#   - ota_0/ota_1: 双 OTA 分区(阶段4 空中升级在两者间切换)
+#   - spiffs: LittleFS,存 config.json / App 资源 / Lua 脚本
+#   - 无 phy_init: arduino-esp32 默认把 PHY 数据编译进固件,不需单独分区
+#
+# 偏移连续性校验(8MB = 0x800000):
+#   nvs:      0x9000  + 0x5000   = 0xe000   ✓
+#   otadata:  0xe000  + 0x2000   = 0x10000  ✓
+#   factory:  0x10000 + 0x240000 = 0x250000 ✓
+#   ota_0:    0x250000+ 0x240000 = 0x490000 ✓
+#   ota_1:    0x490000+ 0x240000 = 0x6D0000 ✓
+#   spiffs:   0x6D0000+ 0x130000 = 0x800000 ✓  (正好 8MB)
+#
+# ⚠️ 改分区表后必须整片擦除重烧: idf.py -p COMx erase-flash && idf.py flash
+# =============================================================================
+# Name,     Type, SubType,  Offset,   Size,    Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+factory,    app,  factory,  0x10000,  0x240000,
+ota_0,      app,  ota_0,    0x250000, 0x240000,
+ota_1,      app,  ota_1,    0x490000, 0x240000,
+spiffs,     data, spiffs,   0x6D0000, 0x130000,

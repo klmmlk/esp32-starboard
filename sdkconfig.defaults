@@ -1,13 +1,33 @@
-# ink_test_idf 默认配置
+# esp32-starboard 默认配置
 # 首次 idf.py set-target / build 时会读这个文件生成 sdkconfig。
+# ⚠️ 改本文件后若 sdkconfig 已生成,需删除 sdkconfig 再重新 set-target,或用 idf.py reconfigure。
 
-# 目标芯片(对应原 arduino.json 的 esp32s3)
+# ----------------------------- 目标芯片 ---------------------------------------
 CONFIG_IDF_TARGET="esp32s3"
 
 # ⚠️ arduino-esp32 硬性要求 FreeRTOS tick = 1000Hz,否则 CMake 阶段直接报错退出
 CONFIG_FREERTOS_HZ=1000
 
-# ESP32-S3 外扩 PSRAM(对应原 arduino.json 的 PSRAM=enabled)
-# 4.2 寸三色屏整屏缓冲较大,开启更稳妥。若你的模组是 8 线 PSRAM,改用 CONFIG_SPIRAM_MODE_HEX=y
+# ----------------------------- Flash / 分区表 ---------------------------------
+# Flash 8MB(若不是 8MB,改这里 + partitions.csv)
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+
+# 使用自定义分区表(根目录 partitions.csv)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# ----------------------------- PSRAM ------------------------------------------
+# ESP32-S3 外扩 PSRAM。4.2 寸三色屏整屏缓冲较大 + 后期 Lua,开启更稳妥。
+# 现有 sdkconfig 检测为 Quad PSRAM(CONFIG_SPIRAM_MODE_QUAD=y)。
+# 若你的模组是 8 线 Octal PSRAM,取消下面一行注释(并确保 sdkconfig 里 QUAD 关掉):
+# CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y
+# 让 malloc 优先用 PSRAM(大缓冲/Lua 堆受益),普通小对象仍走内部 RAM
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+
+# ----------------------------- Arduino 兼容 -----------------------------------
+# 以下两项让 arduino-esp32 组件正常工作(IDF v5.x 默认可能需显式开)
+# LWIP 等 arduino 依赖会在引入 arduino-esp32 组件时自动配置,一般无需手改
