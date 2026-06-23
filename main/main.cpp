@@ -19,7 +19,7 @@ GxEPD2_3C<GxEPD2_420c_GDEY042Z98, GxEPD2_420c_GDEY042Z98::HEIGHT> display(
 void helloWorld()
 {
     const char str1[] = "Welcome to";
-    const char str2[] = "www.naidu.Icu!";
+    const char str2[] = "www.iiiiii.Icu!";
 
     display.setRotation(0);
     display.setFont(&FreeMonoBold9pt7b);

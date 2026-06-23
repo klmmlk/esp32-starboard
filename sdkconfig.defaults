@@ -31,3 +31,4 @@ CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 # ----------------------------- Arduino 兼容 -----------------------------------
 # 以下两项让 arduino-esp32 组件正常工作(IDF v5.x 默认可能需显式开)
 # LWIP 等 arduino 依赖会在引入 arduino-esp32 组件时自动配置,一般无需手改
+# 注:WiFi 配网用 SmartConfig(ESPTOUCH_AIRKISS,微信小程序/ESPTouch APP),无需特殊 Kconfig。

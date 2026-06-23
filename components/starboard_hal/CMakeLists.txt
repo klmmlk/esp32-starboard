@@ -5,5 +5,5 @@ file(GLOB HAL_SRCS "*.cpp")
 idf_component_register(
     SRCS ${HAL_SRCS}
     INCLUDE_DIRS "include"
-    REQUIRES arduino-esp32 OneButton starboard_config
+    REQUIRES arduino-esp32 OneButton starboard_config esp_driver_gpio esp_wifi esp_netif esp_event wpa_supplicant nvs_flash
 )

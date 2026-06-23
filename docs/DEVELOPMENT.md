@@ -73,9 +73,9 @@ esp32-starboard/
 | 屏幕 RST | CONFIG_PIN_RST=18（当前用 7） | ____ | |
 | 屏幕 BUSY | CONFIG_PIN_BUSY=19（当前用 9） | ____ | |
 | 屏幕 SPI SCK/MOSI | 默认（当前 SCK=12/MOSI=11） | ____ | |
-| 左键 BUTTONL | 35 | ____ | ⚠️ S3 不可用 35，须换 RTC GPIO |
-| 中键 BUTTONC | 34 | ____ | ⚠️ S3 不可用 34，须换 RTC GPIO |
-| 右键 BUTTONR | 39 | ____ | ⚠️ S3 不可用 39 |
+| 左键 BUTTONL | 4 | ____ |  RTC GPIO |
+| 中键 BUTTONC | 5 | ____ |  RTC GPIO |
+| 右键 BUTTONR | 6 | ____ | RTC GPIO |
 | 按键有效电平 | active-low（LiClock 自动检测） | ____ | 高/低电平触发 |
 | 电池 ADC | PIN_ADC=33 | ____ | ⚠️ S3 不可用 33，换 ADC1 通道；分压比 |
 | 充电状态 | PIN_CHARGING=26 | ____ | |
@@ -253,6 +253,11 @@ esp32-starboard/
 - 2026-06-23 —— ✅ **阶段0 烧录验证通过**，hello-world 正常显示。阶段0 完成，提交 commit `ae8a7d7`。
 - 2026-06-23 —— **阶段1 启动（HAL）**。设计决策：`starboard_hal` **不依赖 display/gui**（保持底层纯粹），配网/关机等 UI 交互留给阶段3 App。分 6 个里程碑小步推进：M1 init+按键 / M2 配置+电压 / M3 WiFi / M4 NTP / M5 深睡 / M6 蜂鸣器。重要移植点：LiClock 的 Buzzer/hal 的 LEDC 调用是 arduino-esp32 **2.x API**（`ledcSetup`/`ledcAttachPin(pin,ch)`），3.x 已改（`ledcAttach(pin,freq)` / `ledcWriteTone(pin,...)`），蜂鸣器移植时必须适配。
 - 2026-06-23 —— **阶段1-M1 完成**（待编译验证）：`starboard_hal` 组件骨架 + `init()`（串口/时区/Preferences/按键轮询任务）+ OneButton 三键事件串口打印。main.cpp 调 `hal.init()`。
+- 2026-06-23 —— ✅ **阶段1-M1 验证通过**（编译 + 烧录）。修一处编译错：OneButton 库**无 `isPressed()`**,应为 `isPressing()`(实时 `digitalRead` 引脚电平)。`waitForAllReleased()` 用它判断「键是否还按着」一直等到全松开。⚠️ 教训:本项目 OneButton 版本的 API 是 `isPressing()`/`isLongPressed()`/`isIdle()`,移植 LiClock 时注意别照抄别处的方法名。
+- 2026-06-23 —— ✅ **阶段1-M5 完成(深睡 + ext1 按键唤醒)**。按 ESP32-S3 官方睡眠文档重写(非照搬 LiClock):ext1 + `ESP_EXT1_WAKEUP_ANY_LOW`(S3 正解;LiClock 的 `ALL_LOW` 已 deprecated 且语义是「全部为低」)、`rtc_gpio_pullup_en` + `RTC_PERIPH=ON`(数字 GPIO 的内部上拉深睡时随数字域断电失效,必须另开 RTC IO 上拉,否则引脚浮空唤醒不可靠)、`RTC_DATA_ATTR bootCount` 验证 RTC 内存跨深睡保留。验证:长按左键进深睡、任一键唤醒(GPIO 号正确)、bootCount 递增。
+- 2026-06-23 —— M5 踩的坑(均含教训):① **`uint32_t` 在 xtensa 是 `unsigned long`**,`printf` 用 `%u` 触发 `-Werror=format=` → 用 `(unsigned)` 转型。② **按键回调里直接调 `goSleep` → 内部 `waitForAllReleased` → `tickButtons` 重入 `OneButton::tick`,长按回调被递归重复触发,叠加 `esp_sleep_*` 栈消耗,4096 任务栈溢出 panic 重启**(现象像「自动唤醒」,实为栈溢出重启——输出里没有第二次 init 横幅可辨)。改法:回调只置 `wantSleep` 标志,任务循环在 `tick()` 返回后的干净栈上调 `goSleep`;任务栈 4096→8192。⚠️ 教训:OneButton 回调里别跑重操作,一律用标志位 deferred 到任务主循环。③ **硬件接线:屏幕 CS(10)/BUSY(9) 插反** → 屏不工作/`display.init()` 卡死(BUSY 是屏输出、CS 是输入,插反 SPI 时序全乱)。已修正。
+- 2026-06-23 —— ✅ **阶段1-M3/M4 完成(WiFi 配网 + NTP 对时)**。配网选型:先做 **DPP**,实测国产 Android **扫不出配网**(系统相机把 `DPP:` URI 当文本,国产 ROM 无 Easy Connect 入口)→ 弃用;`wifi_prov_mgr` SoftAP 需手机装官方 APP(用户偏好不装)→ 弃;最终选 **SmartConfig(`SC_TYPE_ESPTOUCH_AIRKISS`)**:手机用**微信「AirKiss」小程序**(国产机人人有微信、无需装额外 APP)或 ESPTouch APP,UDP 广播把 SSID+密码发给设备,设备侦听接收。NTP 用官方 `esp_netif_sntp`(单源 `ntp.aliyun.com`,GOT_IP 后启动)。验证:微信小程序配网→设备收 SSID→连接→NTP 同步北京时间→重启自动直连。
+- 2026-06-23 —— M3/M4 坑(均含教训):① **DPP 链接错**(`esp_supp_dpp_*` undefined):`CONFIG_ESP_WIFI_DPP_SUPPORT=y` 改了 sdkconfig.defaults **没 reconfigure**,已有 sdkconfig 优先级更高、wpa_supplicant 没编译 esp_dpp.c。⚠️ 印证阶段0 教训:改 sdkconfig.defaults 必须 fullclean/reconfigure。② **NTP 多源编译错**:`ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE` 传 2 服务器报「too many initializers」——`servers[]` 大小受 `CONFIG_LWIP_SNTP_MAX_SERVERS` 限制(默认 1),改单源 `ESP_NETIF_SNTP_DEFAULT_CONFIG`。③ **SmartConfig 用原生 IDF `esp_smartconfig_*`**(在 esp_wifi 组件),非 arduino WiFi 库封装(后者 3.x 已移除)——别被「3.x 移除 SmartConfig」误导。④ 凭据存 **esp_wifi 默认 NVS**(`esp_wifi_get_config` 判已配网),不用 pref。⚠️ 教训:配网方案先验证**目标手机生态**(国产机:微信小程序/不装 APP 优先),别只看协议先进性(DPP 官方推荐但国产机不支持)。
 
 ---
 

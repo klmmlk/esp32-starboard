@@ -36,14 +36,14 @@
 #define SCREEN_WIDTH  400
 #define SCREEN_HEIGHT 300
 
-// ----------------------------- 按键(拨轮三键) ⚠️占位待改 -----------------------
+// ----------------------------- 按键(拨轮三键)  -----------------------
 // S3 安全的 RTC GPIO(0~21 区间)。LiClock 用 34/35/39,S3 不可用,这里改占位。
 // 选了 GPIO0/1/2:均在 RTC GPIO 范围,可做深睡唤醒。
 // ⚠️ GPIO0 是 strap 引脚(上电需为高),若你的按键按下拉低会进下载模式,请换其它。
 //    推荐实测后改成无 strap 冲突的引脚(如 4/5/6 等)。
-#define PIN_BUTTONL 0 // ⚠️占位待改  左键(数字-/返回)
-#define PIN_BUTTONC 1 // ⚠️占位待改  中键(确认)
-#define PIN_BUTTONR 2 // ⚠️占位待改  右键(数字+)
+#define PIN_BUTTONL 4 //  左键(数字-/返回)
+#define PIN_BUTTONC 5 //   中键(确认)
+#define PIN_BUTTONR 6 //   右键(数字+)
 // 按键有效电平:true=按下读到低电平(常见接法),false=按下读到高电平。
 // LiClock 会自动检测;S3 上先用固定值,实测后改。
 #define BUTTON_ACTIVE_LOW true

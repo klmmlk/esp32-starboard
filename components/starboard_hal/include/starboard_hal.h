@@ -46,17 +46,36 @@ public:
     // ------------------------- 时间 -------------------------
     struct tm timeinfo = {};
     time_t now = 0;
-    void getTime(); // M4 起实现(带时钟频率偏移补偿)
+    void getTime(); // 读系统时间填 timeinfo/now(系统时间由 esp_netif_sntp 维护)
 
     // ------------------------- 电压/电源(M2 起实现) -------------------------
     int16_t VCC = 0;          // 电池电压(mV)
     bool USBPluggedIn = false; // USB 已插入
     bool isCharging = false;   // 充电中
 
-    // ------------------------- WiFi(M3 起实现) -------------------------
+    // ------------------------- WiFi + NTP(M3/M4) -------------------------
+    enum class WifiState { Idle, Connecting, Connected, Provisioning };
+    WifiState wifiState = WifiState::Idle;
+    String wifiSsid;         // 连上后填当前 SSID
+    bool timeSynced = false; // NTP 是否已同步
+    /** 建栈:NVS/netif/event/默认 STA + 注册 WIFI/IP/SC 事件 + esp_wifi_start。init 内调用。
+     *  已配网(esp_wifi NVS 有凭据)则自动连接,否则进入 SmartConfig(ESPTouch_AirKiss)配网。 */
+    void wifiInit();
+    /** GOT_IP 后启动 esp_netif_sntp 同步。 */
+    void ntpStart();
 
     // ------------------------- 深睡(M5 起实现) -------------------------
     bool wakeUpFromDeepSleep = false;
+    /** 上次唤醒的按键 PIN(4/5/6),-1=非按键唤醒(TIMER/正常上电)。M5 验证用。 */
+    int wakeupButton = -1;
+    /** 进深睡。sec>0 同时启用 timer 唤醒(秒);sec==0 仅按键唤醒。不返回。 */
+    void goSleep(uint32_t sec = 0);
+    /** 请求深睡标志:按键回调只置位,任务循环在 tick() 返回后的干净栈上再调 goSleep(),
+     *  避免在 OneButton::tick 的回调栈里直接跑 esp_sleep(重入 + 深栈)。 */
+    volatile bool wantSleep = false;
+    uint32_t sleepSec = 0;
+    /** 在 init 早期调用:检测唤醒原因,设 wakeUpFromDeepSleep,记录唤醒键。 */
+    void checkWakeupCause();
 
 private:
 };
