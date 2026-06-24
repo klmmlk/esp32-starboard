@@ -54,13 +54,15 @@ public:
     bool isCharging = false;   // 充电中
 
     // ------------------------- WiFi + NTP(M3/M4) -------------------------
-    enum class WifiState { Idle, Connecting, Connected, Provisioning };
+    enum class WifiState { Idle, Connecting, Connected, Provisioning, Failed };
     WifiState wifiState = WifiState::Idle;
     String wifiSsid;         // 连上后填当前 SSID
     bool timeSynced = false; // NTP 是否已同步
-    /** 建栈:NVS/netif/event/默认 STA + 注册 WIFI/IP/SC 事件 + esp_wifi_start。init 内调用。
-     *  已配网(esp_wifi NVS 有凭据)则自动连接,否则进入 SmartConfig(ESPTouch_AirKiss)配网。 */
-    void wifiInit();
+    /** 建栈:NVS/netif/event/默认 STA + 注册 WIFI/IP/SC 事件 + esp_wifi_start,
+     *  然后【阻塞等连接结果(超时 timeoutSec 秒)】。连上/超时都返回,不让 app 无限挂住。
+     *  已配网(esp_wifi NVS 有凭据)则自动连接,否则进入 SmartConfig(ESPTouch_AirKiss)配网。
+     *  超时返回 wifiState=Failed,app 应继续用本地 RTC 时间显示(深睡期间走时维持)。 */
+    void wifiInit(uint32_t timeoutSec = 8);
     /** GOT_IP 后启动 esp_netif_sntp 同步。 */
     void ntpStart();
 

@@ -155,12 +155,12 @@ esp32-starboard/
 **参考**：`LiClock/src/GUI.cpp`、`graph.cpp`、`include/GUI.h`。
 
 **Checklist**：
-- [ ] `starboard_display`：display 全局实例（`GxEPD2_3C<GxEPD2_420c_GDEY042Z98,...>`，引脚沿用 CS=10/DC=8/RST=7/BUSY=9）
-- [ ] 三色屏策略：删 LiClock 局部刷新 `display.display(false)`，统一全屏 `display.display()`
-- [ ] 语义颜色定义：`COL_NORMAL=GxEPD_BLACK`、`COL_ALERT=GxEPD_RED`、`COL_BG=GxEPD_WHITE`
+- [x] `starboard_display`：display 全局实例（`GxEPD2_3C<GxEPD2_420c_GDEY042Z98,...>`，引脚沿用 CS=10/DC=8/RST=7/BUSY=9）
+- [x] 三色屏策略：删 LiClock 局部刷新 `display.display(false)`，统一全屏 `display.display()`（注：经核验，`display(false)` 的参数本就是"是否局部刷新"，默认 false=全屏，LiClock 调的 `display.display(false)` 已是全屏；三色屏真正要避免的是 partial/带 true 的局部刷。本项目统一 `setFullWindow`/`firstPage`/`nextPage` 全刷）
+- [x] 语义颜色定义：`COL_NORMAL=GxEPD_BLACK`、`COL_ALERT=GxEPD_RED`、`COL_BG=GxEPD_WHITE`（`starboard_display.h`，本项目新增——LiClock 黑白屏无红色用法）
 - [ ] 红色约定：低电量/充电/闹钟/错误/天气预警→红，其余黑（GUI 层集中处理）
 - [ ] 排版坐标从 296×128 → 400×300 重做
-- [ ] 中文字体：`U8g2_for_Adafruit_GFX` + `u8g2_font_wqy12_t_gb2312`
+- [ ] 中文字体：`U8g2_for_Adafruit_GFX` + `u8g2_font_wqy12_t_gb2312`（已搭好框架，默认主字体改用 15px `u8g2_font_wqy15_t_gb2312`；其余字号在 GUI 层按场景切换）
 - [ ] `starboard_gui`：移植 `msgbox`/`msgbox_yn`/`msgbox_number`/`msgbox_time`/`menu`/`drawWindowsWithTitle`/`drawLBM`/`autoIndentDraw`
 - [ ] 验证：中文 msgbox + 红色渲染 + 菜单可切，全屏刷新无残影
 
@@ -230,7 +230,8 @@ esp32-starboard/
 |---|--------|------|
 | 1 | GPL-3.0 衍生约束 | 本项目须 GPL-3.0 开源；LICENSE/README 标明原作者与链接 |
 | 2 | 引脚不兼容（S3 vs Solo-1） | 阶段0 确认按键/SD/ADC 引脚，集中 `starboard_config`；26-37 受限 |
-| 3 | 三色屏只能全刷 | 删 partial；语义颜色；红色约定；坐标 400×300 重排 |
+| 3 | 三色屏只能全刷 | 删 partial；语义颜色；红色约定；坐标 400×300 重排。⚠️ 进一步(阶段2a 实测)：SSD1683 双显存(0x24黑白/0x26红白)的刷新波形**硬件层不可分离**——`refresh()`走全色全刷(~25s)，`refresh_bw()`只刷黑白但红色会变浅/黑且仍是整屏刷、与 `GxEPD2_3C` 分页架构冲突。**结论:黑/红刷新不分开,坚持"选择性用红"(红只用于低频切换的静态强调元素)**。 🔴**进一步实测(06-24)**:`nextPageBW`+`setPartialWindow` 黑白局刷在 GDEY042Z98 上【不可用】:① 即便设局部区域仍【整屏闪】(420c 驱动底层 full window refresh);② 局刷时屏上已有【红色被黑白波形洗淡/串色】;③ 局刷区【残影累积】。Waveshare 官方 `4in2b_V2` 库亦无 partial API(只有 Init/Clear/Display/Sleep 全刷)。**→ 局刷路线彻底否决,本项目锁定全彩全刷;刷新策略定为【纯事件驱动】(平时深睡静态保持,仅按键/天气更新/闹钟触发才全刷),放弃 LiClock 那套"每分钟局刷更新分钟数"。** |
+| 3a | 中文字体只有 wqy 可靠(阶段2a 实测) | 库内**唯一**同时含 ASCII+全 GB2312 汉字的是 `u8g2_font_wqy*_t_gb2312` 系列(12-16px,~318KB)。`unifont_tf`/`crox*c_tf` 仅几KB=纯拉丁无汉字；`b10/12/16_t_japanese*`=日文汉字(非中文)；`unifont_t_chinese1/2/3`=只含汉字不含ASCII需分3段。默认用 `wqy16`。点阵细体,软件横向描边加粗(weight)实测**不如原样清晰**,故不加粗。 |
 | 4 | 运行时魔改分区表 | 删 `refresh_partition_table`/`test_littlefs_size`，用固定 partitions.csv |
 | 5 | arduino-esp32 3.x API | LEDC（新 API）/DNSServer/SmartConfig 在 S3 上逐项实测 |
 | 6 | S3 深睡唤醒约束 | 唤醒按键必须 RTC GPIO；ext0/ext1 按 S3 调整 |
@@ -258,6 +259,10 @@ esp32-starboard/
 - 2026-06-23 —— M5 踩的坑(均含教训):① **`uint32_t` 在 xtensa 是 `unsigned long`**,`printf` 用 `%u` 触发 `-Werror=format=` → 用 `(unsigned)` 转型。② **按键回调里直接调 `goSleep` → 内部 `waitForAllReleased` → `tickButtons` 重入 `OneButton::tick`,长按回调被递归重复触发,叠加 `esp_sleep_*` 栈消耗,4096 任务栈溢出 panic 重启**(现象像「自动唤醒」,实为栈溢出重启——输出里没有第二次 init 横幅可辨)。改法:回调只置 `wantSleep` 标志,任务循环在 `tick()` 返回后的干净栈上调 `goSleep`;任务栈 4096→8192。⚠️ 教训:OneButton 回调里别跑重操作,一律用标志位 deferred 到任务主循环。③ **硬件接线:屏幕 CS(10)/BUSY(9) 插反** → 屏不工作/`display.init()` 卡死(BUSY 是屏输出、CS 是输入,插反 SPI 时序全乱)。已修正。
 - 2026-06-23 —— ✅ **阶段1-M3/M4 完成(WiFi 配网 + NTP 对时)**。配网选型:先做 **DPP**,实测国产 Android **扫不出配网**(系统相机把 `DPP:` URI 当文本,国产 ROM 无 Easy Connect 入口)→ 弃用;`wifi_prov_mgr` SoftAP 需手机装官方 APP(用户偏好不装)→ 弃;最终选 **SmartConfig(`SC_TYPE_ESPTOUCH_AIRKISS`)**:手机用**微信「AirKiss」小程序**(国产机人人有微信、无需装额外 APP)或 ESPTouch APP,UDP 广播把 SSID+密码发给设备,设备侦听接收。NTP 用官方 `esp_netif_sntp`(单源 `ntp.aliyun.com`,GOT_IP 后启动)。验证:微信小程序配网→设备收 SSID→连接→NTP 同步北京时间→重启自动直连。
 - 2026-06-23 —— M3/M4 坑(均含教训):① **DPP 链接错**(`esp_supp_dpp_*` undefined):`CONFIG_ESP_WIFI_DPP_SUPPORT=y` 改了 sdkconfig.defaults **没 reconfigure**,已有 sdkconfig 优先级更高、wpa_supplicant 没编译 esp_dpp.c。⚠️ 印证阶段0 教训:改 sdkconfig.defaults 必须 fullclean/reconfigure。② **NTP 多源编译错**:`ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE` 传 2 服务器报「too many initializers」——`servers[]` 大小受 `CONFIG_LWIP_SNTP_MAX_SERVERS` 限制(默认 1),改单源 `ESP_NETIF_SNTP_DEFAULT_CONFIG`。③ **SmartConfig 用原生 IDF `esp_smartconfig_*`**(在 esp_wifi 组件),非 arduino WiFi 库封装(后者 3.x 已移除)——别被「3.x 移除 SmartConfig」误导。④ 凭据存 **esp_wifi 默认 NVS**(`esp_wifi_get_config` 判已配网),不用 pref。⚠️ 教训:配网方案先验证**目标手机生态**(国产机:微信小程序/不装 APP 优先),别只看协议先进性(DPP 官方推荐但国产机不支持)。
+- 2026-06-24 —— **阶段1 收尾决策 + 阶段2 启动**。① 蜂鸣器(M6):用户改接 **有源蜂鸣器(GPIO40)**——与 LiClock 无源(LEDC 频率驱动)驱动方式完全不同(有源只能 on/off、播不了旋律),原计划方案推翻;经讨论用户决定**暂时跳过 M6**,留到硬件/方案定了再做。② 电池(M2 电压检测):**开发板暂无电池,跳过**;M2 的配置持久化部分无 App 消费也暂搁。③ 据此阶段1 暂停于"M1/M3/M4/M5 已完成",转入**阶段2(显示+GUI)**——它不依赖电池/蜂鸣器,屏幕引脚已验证,可独立推进。
+- 2026-06-24 —— **阶段2a 完成**(`starboard_display` 组件,待编译验证)。把原散在 `main.cpp` 的 display 实例抽成独立 IDF 组件:`GxEPD2_3C<GxEPD2_420c_GDEY042Z98, HEIGHT>` 全局实例 + `U8G2_FOR_ADAFRUIT_GFX u8g2` + 统一全刷初始化 `display_init()`/`display_deinit()`。新增**语义颜色**(本项目新增,LiClock 黑白屏无红色):`COL_NORMAL=黑/COL_ALERT=红/COL_BG=白`。中文字体默认 `u8g2_font_wqy15_t_gb2312`(15px)。main.cpp 改为验证 demo:主时钟骨架(顶部黑大字时间 + 中部黑中文 + **红色**预警中文 + 底部状态栏)。main/CMakeLists REQUIRES 由 `GxEPD2` 换成 `starboard_display`(后者 PUBLIC 传递 GxEPD2/U8g2/Adafruit_GFX)。
+- 2026-06-24 —— **阶段2 刷新策略定案(纯事件驱动)**。① 局刷实测否决(见风险#3)。② 派 agent 调研 LiClock 刷新机制:LiClock 是【深睡 + 定时/按键唤醒 + setup()画一帧】的**事件驱动架构**(`loop()` 自删,逻辑跑在 `task_appManager` 状态机),**非后台定时刷屏**——这层可照搬,三色屏全刷的慢可被深睡掩盖。但其【主时钟每分钟局刷更新分钟数】(`appClock.cpp:198` `display(true)`)与【GUI 菜单每按一次键局刷重画选中框】(`GUI.cpp:246` `displayWindow`)是局刷核心用途,三色屏**必须改造**:放弃分钟实时刷新、菜单改"浏览不刷/确认才刷"、`push_buffer/pop_buffer` 缓冲区栈因 GxEPD2_3C 不支持 `swapBuffer` 改为整屏重画。③ 经确认采用【**纯事件驱动**】刷新:平时深睡,屏幕静态保持(墨水屏断电保持特性),仅按键/天气更新/闹钟触发全刷一帧。④ main.cpp 改为纯事件驱动全刷验证 demo(`refreshMainFrame()` 全刷一帧 + millis 测耗时 → `goSleep(0)` 纯按键唤醒),用于实测全刷耗时(后续所有交互的时间基准)。待用户烧录报实测耗时。
+- 2026-06-24 —— 阶段2a 调研要点(经源码 + context7 GxEPD2 官方文档双重核实):① **三色屏全刷模式**与官方 GxEPD2_GFX_Example 一致(`setFullWindow`→`firstPage`→`do{ 绘制 }while nextPage`),绘制须在循环体内**每页重画**。② **420c 三色屏底层全刷**:`GxEPD2_420c_GDEY042Z98.h` 注释明示"has partial window addressing, but uses full window refresh",`hasFastPartialUpdate=false`→ 本项目**不碰 partial**,无需额外禁用。③ **`display(false)` 是全屏不是局部**:LiClock 调的 `display.display(false)` 已是全屏(参数=是否局部),真正要避免的是 partial/带 true 的局部刷;文档原"删 display.display(false)"表述已更正。④ **u8g2 颜色独立**:与 `display.setTextColor` 互不相干,画中文前须各自 `u8g2.setForegroundColor`;`drawUTF8(x,y,str)` 显式带坐标、不依赖游标。⑤ 字体符号声明在 `U8g2_for_Adafruit_GFX.h`,cpp 无需额外 include `u8g2_fonts.h`。
 
 ---
 

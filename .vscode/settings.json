@@ -12,6 +12,6 @@
     "--query-driver=**",
     "--compile-commands-dir=build"
   ],
-  "idf.portWin": "COM6",
+  "idf.portWin": "COM3",
   "idf.flashType": "UART"
 }

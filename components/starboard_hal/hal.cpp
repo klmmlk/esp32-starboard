@@ -16,6 +16,11 @@
 // 深睡唤醒计数(存 RTC 慢速内存,跨深睡保留)。M5 验证 RTC 内存保留用。
 RTC_DATA_ATTR uint32_t bootCount = 0;
 
+// WiFi 重连退避:连不上时按失败次数递增间隔重连,避免疯狂重连刷屏/耗电。
+// (esp_wifi 内部已有一定重试,这里在断开事件上再加一层节流。)
+static constexpr uint8_t WIFI_RECONNECT_MAX_FAIL = 6; // 达此失败数后停重连(等下次唤醒重试)
+static uint8_t wifiReconnectFail = 0;                 // 当前连续失败次数
+
 // -----------------------------------------------------------------------------
 // 按键事件回调(M1 验证用:串口打印)。后续里程碑会被 App 框架接管。
 // -----------------------------------------------------------------------------
@@ -200,10 +205,27 @@ static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
             break;
         }
         case WIFI_EVENT_STA_DISCONNECTED:
+        {
             hal.wifiState = HAL::WifiState::Idle;
-            Serial.println("[HAL] WiFi 断开,重连...");
-            esp_wifi_connect();
+            // 退避重连:失败次数递增到上限就停,不再疯狂 esp_wifi_connect 刷屏。
+            // reason 见 WIFI_REASON_*;密码错/找不到 AP 会持续失败,退避后等下次唤醒再试。
+            if (wifiReconnectFail < WIFI_RECONNECT_MAX_FAIL)
+            {
+                wifiReconnectFail++;
+                uint32_t backoff = 500UL * wifiReconnectFail; // 0.5s,1s,1.5s...线性退避
+                Serial.printf("[HAL] WiFi 断开,退避 %lums 后重连(第 %u 次)...\n",
+                              (unsigned long)backoff, wifiReconnectFail);
+                vTaskDelay(pdMS_TO_TICKS(backoff));
+                esp_wifi_connect();
+            }
+            else if (wifiReconnectFail == WIFI_RECONNECT_MAX_FAIL)
+            {
+                wifiReconnectFail++; // 防重复打印(只在到上限时打一次)
+                Serial.println("[HAL] WiFi 重连已达上限,停止重连(等下次唤醒重试)。");
+                hal.wifiState = HAL::WifiState::Failed;
+            }
             break;
+        }
         default:
             break;
         }
@@ -235,6 +257,7 @@ static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
     else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP)
     {
         hal.wifiState = HAL::WifiState::Connected;
+        wifiReconnectFail = 0; // 连上,清零失败计数
         wifi_config_t cur = {};
         esp_wifi_get_config(WIFI_IF_STA, &cur);
         hal.wifiSsid = (const char *)cur.sta.ssid;
@@ -243,7 +266,7 @@ static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
     }
 }
 
-void HAL::wifiInit()
+void HAL::wifiInit(uint32_t timeoutSec)
 {
     // NVS:SmartConfig 凭据存 esp_wifi 默认 NVS;容忍分区版本变化
     esp_err_t err = nvs_flash_init();
@@ -266,6 +289,25 @@ void HAL::wifiInit()
     esp_wifi_init(&cfg);
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_start();
+
+    // 【阻塞等连接结果,超时即放弃】避免"连不上旧 WiFi → 无限挂死 app"。
+    // 连上(Connected)/配网中(Provisioning)即返回;超时设 Failed 让 app 用本地 RTC 时间继续。
+    Serial.printf("[HAL] 等待 WiFi 连接(超时 %lus)...\n", (unsigned long)timeoutSec);
+    uint32_t waited = 0;
+    const uint32_t stepMs = 200;
+    while (wifiState != WifiState::Connected && wifiState != WifiState::Provisioning
+           && waited < timeoutSec * 1000)
+    {
+        delay(stepMs);
+        waited += stepMs;
+    }
+    if (wifiState != WifiState::Connected && wifiState != WifiState::Provisioning)
+    {
+        wifiState = WifiState::Failed;
+        Serial.println("[HAL] WiFi 连接超时,放弃(继续用本地 RTC 时间显示)。");
+        // 停掉反复重连刷屏:让退避计数停在最大,不再立刻 esp_wifi_connect。
+        wifiReconnectFail = WIFI_RECONNECT_MAX_FAIL;
+    }
 }
 
 void HAL::ntpStart()
