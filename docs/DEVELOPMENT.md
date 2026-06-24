@@ -150,7 +150,7 @@ esp32-starboard/
 
 ---
 
-### 阶段 2：显示 + GUI（三色屏适配）  🔄(2a display + 2b GUI 移植完成 · 待烧录验证)
+### 阶段 2：显示 + GUI（三色屏适配）  ✅(display + GUI + busy callback 防丢键 + menu 合并窗口 · 已烧录验证)
 
 **目标**：三色屏显示层与 GUI 工具，参考 LiClock `src/GUI.cpp` + `graph.cpp` + `include/GUI.h`。
 
@@ -163,10 +163,12 @@ esp32-starboard/
 - [x] 🔶 红色约定：GUI 层语义色 `COL_NORMAL`/`COL_ALERT`/`COL_BG` 已落地（starboard_gui 标题/告警可用 `COL_ALERT`）；「低电量/充电→红」等具体规则待 App 消费时按场景调用。
 - [x] 🔶 排版坐标 296×128 → 400×300：主时钟骨架 + GUI（msgbox 280×190、menu 340×270、number/time 220×120）均已用 `SCREEN_WIDTH/HEIGHT` 居中重排。
 - [x] 中文字体：`U8g2_for_Adafruit_GFX` + 默认主字体 `u8g2_font_wqy16_t_gb2312`（**16px**，库内唯一含 ASCII+全 GB2312 全字库）。
-- [x] `starboard_gui`：移植 `msgbox`/`msgbox_yn`/`msgbox_number`/`msgbox_time`/`menu`/`drawWindowsWithTitle`/`autoIndentDraw`/`waitLongPress`。删 LiClock 的 `push_buffer`/`pop_buffer`（本项目 `GxEPD2_3C` **无** `swapBuffer`/`copyBuffer`/`current_buffer_idx`）→ 弹窗**不恢复背景**、返回后上层重画；每次画面变化全刷分页；颜色语义化；坐标 400×300；按键 `hal.btn*.isPressing()` 轮询 + `hal.pauseButtons` 暂停后台 tick 防 GUI 期间左键长按触发深睡。menu 刷新=**移动即全刷**（用户选定）。`drawLBM`/`fileDialog`（需 LittleFS）、`graph.cpp`（天气专用）后置。
-- [ ] 🔶 验证：✅ 红色全刷渲染 + 中文显示 + 全刷无残影（main.cpp 主帧 demo 已验证）；中文 msgbox/msgbox_yn/menu 交互**待烧录**（main.cpp 中键唤醒进 `guiDemo`）。
+- [x] `starboard_gui`：移植 `msgbox`/`msgbox_yn`/`msgbox_number`/`msgbox_time`/`menu`/`drawWindowsWithTitle`/`autoIndentDraw`/`waitLongPress`。删 LiClock 的 `push_buffer`/`pop_buffer`（本项目 `GxEPD2_3C` **无** `swapBuffer`/`copyBuffer`/`current_buffer_idx`）→ 弹窗**不恢复背景**、返回后上层重画；每次画面变化全刷分页；颜色语义化；坐标 400×300。`drawLBM`/`fileDialog`（需 LittleFS）、`graph.cpp`（天气专用）后置。
+- [x] 🔶 busy callback 防丢键（三色屏全刷 ~5s 期间按键不丢）：`initInput()` 注册 `display.epd2.setBusyCallback`，GxEPD2 `_waitWhileBusy` 循环里回调读三键 `isPressing()` + 上升沿 → 按键事件环形队列；GUI 改 `waitKeyEvent()` 消费队列（替代 LiClock 的 `isPressing` 轮询）。`hal.pauseButtons` 暂停后台 tick 防 GUI 期间左键长按触发深睡（`isPressing` 是实时 digitalRead，不受影响）。
+- [x] 🔶 menu 合并窗口：连按 N 次移动键只渲染最终位置（避免按 N 次刷 N×5s）。`waitKeyEvent` 拿第一个事件后开 ~300ms 窗口，窗口内连续移动叠加、用户停顿才刷一帧；中键事件放回队列下一轮处理。⚠️ 关键坑：渲染须在 `waitKeyEvent` **前**（循环顶）执行，否则进入 menu 黑屏、第一次按键才显示（像"立即响应"假象，曾误判合并窗口失效）。
+- [x] 🔶 验证：✅ 红色全刷渲染 + 中文显示 + 全刷无残影（主帧 demo）；✅ msgbox/msgbox_yn/menu 交互烧录验证（menu 连按合并窗口生效、刷屏期间按键不丢、进入即显示菜单）。
 
-**状态**：2a（display + 全刷策略 + 语义色 + 中文字体）完成（commit `1327c42`）；2b 事件驱动刷新 + `starboard_gui` 移植完成（**待编译+烧录验证**）。⏳ 待用户烧录报【全刷实测耗时】+ GUI 交互验证（msgbox/菜单全刷无残影）。
+**状态**：阶段 2 完成。2a display + 全刷策略 + 语义色 + 中文字体（commit `1327c42`）；2b 事件驱动刷新 + `starboard_gui` 移植 + busy callback 防丢键 + menu 合并窗口（已烧录验证）。全刷实测 5.4s；局刷提速经 stage2c 实验证伪（见风险#3），改用【事件驱动深睡 + busy callback + 合并窗口】缓解慢刷体验。
 
 **风险**：三色屏不支持局部刷新（残影/串色）；坐标全重排。
 
@@ -234,7 +236,7 @@ esp32-starboard/
 |---|--------|------|
 | 1 | GPL-3.0 衍生约束 | 本项目须 GPL-3.0 开源；LICENSE/README 标明原作者与链接 |
 | 2 | 引脚不兼容（S3 vs Solo-1） | 阶段0 确认按键/SD/ADC 引脚，集中 `starboard_config`；26-37 受限 |
-| 3 | 三色屏只能全刷 | 删 partial；语义颜色；红色约定；坐标 400×300 重排。⚠️ 进一步(阶段2a 实测)：SSD1683 双显存(0x24黑白/0x26红白)的刷新波形**硬件层不可分离**——`refresh()`走全色全刷(~25s)，`refresh_bw()`只刷黑白但红色会变浅/黑且仍是整屏刷、与 `GxEPD2_3C` 分页架构冲突。**结论:黑/红刷新不分开,坚持"选择性用红"(红只用于低频切换的静态强调元素)**。 🔴**进一步实测(06-24)**:`nextPageBW`+`setPartialWindow` 黑白局刷在 GDEY042Z98 上【不可用】:① 即便设局部区域仍【整屏闪】(420c 驱动底层 full window refresh);② 局刷时屏上已有【红色被黑白波形洗淡/串色】;③ 局刷区【残影累积】。Waveshare 官方 `4in2b_V2` 库亦无 partial API(只有 Init/Clear/Display/Sleep 全刷)。**→ 局刷路线彻底否决,本项目锁定全彩全刷;刷新策略定为【纯事件驱动】(平时深睡静态保持,仅按键/天气更新/闹钟触发才全刷),放弃 LiClock 那套"每分钟局刷更新分钟数"。** |
+| 3 | 三色屏只能全刷 | 删 partial；语义颜色；红色约定；坐标 400×300 重排。⚠️ 进一步(阶段2a 实测)：SSD1683 双显存(0x24黑白/0x26红白)的刷新波形**硬件层不可分离**——`refresh()`走全色全刷(~25s)，`refresh_bw()`只刷黑白但红色会变浅/黑且仍是整屏刷、与 `GxEPD2_3C` 分页架构冲突。**结论:黑/红刷新不分开,坚持"选择性用红"(红只用于低频切换的静态强调元素)**。 🔴**进一步实测(06-24)**:`nextPageBW`+`setPartialWindow` 黑白局刷在 GDEY042Z98 上【不可用】:① 即便设局部区域仍【整屏闪】(420c 驱动底层 full window refresh);② 局刷时屏上已有【红色被黑白波形洗淡/串色】;③ 局刷区【残影累积】。Waveshare 官方 `4in2b_V2` 库亦无 partial API(只有 Init/Clear/Display/Sleep 全刷)。**→ 局刷路线彻底否决,本项目锁定全彩全刷;刷新策略定为【纯事件驱动】(平时深睡静态保持,仅按键/天气更新/闹钟触发才全刷),放弃 LiClock 那套"每分钟局刷更新分钟数"。** 🔴**stage2c 再实测(06-24,已放弃)**:`refresh_bw` 改 `0xfc`(SSD1683 OTP 局刷,借自同芯片黑白屏 GxEPD2_420_GDEY042T81)+ 去掉错误的 `0x21=0x40`(bypass RED 在三色屏=红 RAM 当白输出→红消失)后,局刷【能保红】(窗口外红保持)+ 窗口内黑白清晰——推翻了上面"局刷彻底否决"的串色结论(当初是 `0xdc` OTP+红色参与所致)。**但耗时 5118ms≈全刷 5434ms,没提速**:GDEY042Z98 `hasFastPartialUpdate=false`、注释"uses full window refresh",OTP 局刷底层走全屏慢波形(三色屏红粒子物理分离慢)。自定义 LUT 快速局刷是 **UC8179 特例**(e-Paper_FastFreshBWOnColor:`0x00=0x3F` 选 register、`0x12` refresh、LUT 地址均与 SSD1683 不同,不能搬),社区共识"三色屏不支持快速局刷",SSD1683 大概率走不通。**→ 局刷对本项目无价值(不提速,红保持全刷也能做到),放弃,锁定全刷;刷新慢靠【事件驱动深睡 + busy callback 刷屏期间捕获按键】缓解。stage2c 分支已删。** |
 | 3a | 中文字体只有 wqy 可靠(阶段2a 实测) | 库内**唯一**同时含 ASCII+全 GB2312 汉字的是 `u8g2_font_wqy*_t_gb2312` 系列(12-16px,~318KB)。`unifont_tf`/`crox*c_tf` 仅几KB=纯拉丁无汉字；`b10/12/16_t_japanese*`=日文汉字(非中文)；`unifont_t_chinese1/2/3`=只含汉字不含ASCII需分3段。默认用 `wqy16`。点阵细体,软件横向描边加粗(weight)实测**不如原样清晰**,故不加粗。 |
 | 4 | 运行时魔改分区表 | 删 `refresh_partition_table`/`test_littlefs_size`，用固定 partitions.csv |
 | 5 | arduino-esp32 3.x API | LEDC（新 API）/DNSServer/SmartConfig 在 S3 上逐项实测 |
@@ -270,6 +272,8 @@ esp32-starboard/
 - 2026-06-24 —— **阶段1 WiFi 健壮性补强**(已进 commit `1327c42`)。① 连接阻塞+超时:`wifiInit(timeoutSec=8)` 轮询 wifiState,连上/配网中即返回,超时设 `Failed` 并把退避计数顶到上限停重连(防"连不上旧 WiFi → 反复重连刷屏/耗电 → app 无限挂死")。② 断线线性退避:`WIFI_EVENT_STA_DISCONNECTED` 上按失败次数 0.5s/1s/1.5s… 递增 backoff,达 6 次停(密码错/找不到 AP 持续失败时让设备消停,等下次唤醒再试)。③ 连上(GOT_IP)清零失败计数。⚠️ 教训:墨水屏+深睡设备连不上网不能疯狂重试(刷屏+耗电+卡死 app),必须有【超时放弃+退避】兜底。
 - 2026-06-24 —— **阶段2b 前置:main.cpp 演进为【事件 + 定时兜底】混合刷新 demo**。在原"纯事件驱动全刷"基础上:① 加定时兜底(`REFRESH_INTERVAL_SEC=15min`),`goSleep(sec)` 同时开 timer+按键双路唤醒(先到先触发),挂着不动时信息也不至于过时太久;② 配网模式(`wifiState==Provisioning`)**保持唤醒不睡**(否则用户来不及用微信推 WiFi),刷配网提示页后轮询最长 5 分钟等 `Connected`;③ 时间有效性改判 `tm_year>120`(深睡 RTC 维持走时,即便本次没连上 NTP 只要对过时就有准时间),不再只依赖 `timeSynced`。⏳ **待用户烧录报【全刷实测耗时】**(firstPage~nextPage 段,不含 WiFi),据此定交互响应节奏/兜底间隔。
 - 2026-06-24 —— **阶段2b starboard_gui 移植完成**(待编译+烧录验证)。新建 `components/starboard_gui/`(`.h`/`.cpp`/CMakeLists),移植 LiClock `GUI.cpp` 的 msgbox/msgbox_yn/msgbox_number/msgbox_time/menu/drawWindowsWithTitle/autoIndentDraw/waitLongPress。三色屏改造:① 删 push_buffer/pop_buffer——本项目 `GxEPD2_3C` **全库无** `swapBuffer`/`copyBuffer`/`current_buffer_idx`(grep 确认:LiClock 那版 GxEPD2 有、本项目版没有),故弹窗【不恢复背景】、返回后上层重画;② 每次画面变化用 `setFullWindow`/`firstPage`/`nextPage` 全刷分页;③ 颜色硬编码 0/1→COL_NORMAL/ALERT/BG;④ 坐标 296×128→400×300 居中、窗口放大(msgbox 280×190/menu 340×270);⑤ 按键 `hal.btn*.isPressing()` 阻塞轮询。⚠️ **关键坑**:hal 的 `task_hal_update` 是**独立任务**,GUI 阻塞轮询期间后台仍 tick,用户在 GUI 里按左键(否/减)稍久会触发长按回调→`wantSleep`→深睡打断交互——给 HAL 加 `volatile bool pauseButtons` 字段,`task_hal_update` 门控(GUI 期间跳过 tick+深睡),starboard_gui 进出阻塞函数成对切换;`isPressing()` 不受影响(实时 digitalRead)。menu 刷新策略经确认=**移动即全刷**(实时可见,代价每次按键等一次全刷;用户接受,若实测太慢再回头改)。drawLBM/fileDialog(需 LittleFS)、graph.cpp(天气专用)本轮后置。main.cpp 加 `guiDemo`:中键唤醒→msgbox→msgbox_yn→menu→刷回主帧。⚠️ 待用户 `idf.py build` + 烧录验证(本环境无 idf.py);顺带报【全刷实测耗时】。若编译报 `Fonts/FreeSans9pt7b.h` 找不到,给 `starboard_gui/CMakeLists` 加 `REQUIRES Adafruit_GFX`(msgbox_number/time 数字字体经 Adafruit_GFX,正常经 starboard_display→GxEPD2→Adafruit_GFX 传递可见)。
+- 2026-06-24 —— **stage2c 局刷提速实验(放弃)**。为解决全刷 5.4s 期间按键丢失,尝试三色屏黑白局刷提速。改 `GxEPD2_420c_GDEY042Z98::refresh_bw` 用 `0xfc`(SSD1683 OTP 局刷,借自同芯片黑白屏 GxEPD2_420_GDEY042T81)+ 去掉错误的 `0x21=0x40`(bypass RED 在三色屏=红 RAM 当白输出→红条消失,实测定位)。结果:局刷【能保红】(窗口外红保持)+ 窗口内黑白清晰,但【耗时 5118ms≈全刷 5434ms,没提速】。根因:GDEY042Z98 `hasFastPartialUpdate=false`、`hasPartialUpdate` 注释"uses full window refresh"——OTP 局刷只改刷哪块 RAM,刷新波形仍全屏慢(三色屏红粒子物理分离需长时间)。自定义 register LUT(e-Paper_FastFreshBWOnColor 那套)是 **UC8179 特例**(命令/LUT 地址/屏物理均与 SSD1683 不同),社区共识"三色屏不支持快速局刷",SSD1683 大概率走不通。**结论:SSD1683 三色屏快速刷新是物理死路,放弃局刷回全刷。** 刷新期间按键丢失改用【busy callback】解决(GxEPD2 `_waitWhileBusy` 5s 循环每轮调 `_busy_callback`,注册回调读三键+边沿检测存缓冲,GUI 刷完消费)。stage2c 分支已删。⚠️ 教训:墨水屏若需快速刷新,别选三色屏(黑白版如 GDEY042T81 支持快速局刷);三色屏只能慢全刷,靠事件驱动+按键缓冲缓解体验。
+- 2026-06-25 —— **阶段2 收尾:busy callback 防丢键 + menu 合并窗口**(已烧录验证)。三色屏全刷 ~5s,期间按键会丢:GUI 的 `isPressing` 轮询窗口卡在 `_waitWhileBusy`,用户按了又松,刷完才回到轮询、读到"已松"→ 漏检。解法:① `initInput()` 注册 `display.epd2.setBusyCallback`——GxEPD2 的 `_waitWhileBusy` 在等 BUSY 的 5s 循环里每轮调 `_busy_callback`,回调里读三键 `isPressing()` + 上升沿检测 → 按键事件环形队列;GUI 改 `waitKeyEvent()` 消费队列(刷屏时 busy cb 填、非刷屏 GUI 自己 poll,同一队列),刷完即响应、不丢键。② menu 合并窗口:连按 N 次移动只渲染最终位置(避免 N×5s 卡顿),`waitKeyEvent` 拿首事件后开 ~300ms 窗口、连续移动叠加、停顿才刷一帧;中键事件放回队列下轮处理。⚠️ **关键坑**:渲染须放在 `waitKeyEvent` 【前】(循环顶),否则进入 menu 黑屏、第一次按键才显示菜单(像"第一次立即响应"的假象,曾误判合并窗口失效、白改一轮)。`pauseButtons` 在事件模式下仍需(GUI 期间停后台 tick 防左键长按深睡)。number/time 的长按移位与合并穿插复杂,暂未加合并窗口(调数字按几次可接受)。
 
 ---
 

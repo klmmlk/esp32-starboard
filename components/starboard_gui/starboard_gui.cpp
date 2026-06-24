@@ -1,8 +1,14 @@
 // starboard_gui 实现 —— 见 include/starboard_gui.h
 //
-// 移植自 LiClock/src/GUI.cpp,三色屏全刷改造(见头文件注释 + docs/DEVELOPMENT.md 阶段2)。
-// 关键:无 push/pop_buffer(本项目 GxEPD2_3C 无 swapBuffer/copyBuffer/current_buffer_idx),
-//       弹窗【不恢复背景】,每次画面变化用 setFullWindow/firstPage/nextPage 全刷一帧。
+// 移植自 LiClock/src/GUI.cpp,三色屏全刷改造:
+//   - 无 push/pop_buffer(GxEPD2_3C 无 swapBuffer),弹窗【不恢复背景】、上层重画;
+//   - 每次画面变化用 setFullWindow/firstPage/nextPage 全刷一帧。
+//
+// ★ busy callback 防丢键(SSD1683 三色屏全刷 ~5s,期间按键会丢,见风险#3):
+//   GxEPD2 的 _waitWhileBusy 在等 BUSY 的循环里每轮调 _busy_callback(GxEPD2_EPD.cpp)。
+//   initInput() 注册一个回调,在里面读三键 isPressing + 上升沿检测,把"按下"事件存进
+//   环形队列。GUI 的按键循环改用 waitKeyEvent() 消费队列——无论刷屏(busy callback 填)
+//   还是非刷屏(GUI 自己 poll)时段,按键都进同一队列,刷完即响应,一个不丢。
 
 #include "starboard_gui.h"
 #include <Arduino.h>
@@ -10,10 +16,8 @@
 #include <starboard_hal.h>       // hal, btnl/btnc/btnr, pauseButtons
 #include <Fonts/FreeSans9pt7b.h> // msgbox_number/time 数字字体
 
-// 标题栏小字(标题栏 ~15px 高,配 wqy12)。CN_FONT_MAIN=wqy16 用于正文/菜单项。
 static const uint8_t *const FONT_TITLE = u8g2_font_wqy12_t_gb2312;
 
-// 按键引脚 → OneButton 实例(waitLongPress 用)。isPressing()=实时 digitalRead。
 static OneButton &btnOf(int pin)
 {
     if (pin == PIN_BUTTONC) return hal.btnc;
@@ -21,15 +25,85 @@ static OneButton &btnOf(int pin)
     return hal.btnl;
 }
 
+// ==================== 按键事件缓冲(刷屏期间 busy callback 捕获)====================
+namespace
+{
+    constexpr int KEY_BUF_SIZE = 16;
+    int8_t keyBuf[KEY_BUF_SIZE];
+    int keyHead = 0, keyTail = 0;
+    bool lastL = false, lastC = false, lastR = false; // 上次电平(上升沿检测)
+
+    void pushKey(int pin)
+    {
+        keyBuf[keyTail] = (int8_t)pin;
+        int next = (keyTail + 1) % KEY_BUF_SIZE;
+        if (next == keyHead) keyHead = (keyHead + 1) % KEY_BUF_SIZE; // 满则丢最旧
+        keyTail = next;
+    }
+    // 读三键 isPressing + 上升沿(未按→按下)→ push 事件。刷屏(busy cb)/非刷屏(GUI poll)都调。
+    void pollKeys()
+    {
+        bool l = hal.btnl.isPressing();
+        bool c = hal.btnc.isPressing();
+        bool r = hal.btnr.isPressing();
+        if (!lastL && l) pushKey(PIN_BUTTONL);
+        if (!lastC && c) pushKey(PIN_BUTTONC);
+        if (!lastR && r) pushKey(PIN_BUTTONR);
+        lastL = l; lastC = c; lastR = r;
+    }
+    int popKey() // -1 = 空
+    {
+        if (keyHead == keyTail) return -1;
+        int pin = keyBuf[keyHead];
+        keyHead = (keyHead + 1) % KEY_BUF_SIZE;
+        return pin;
+    }
+    // 清队列 + 以当前电平为基线(避免一进来就把"已按下"误判为边沿)
+    void clearKeys()
+    {
+        keyHead = keyTail = 0;
+        lastL = hal.btnl.isPressing();
+        lastC = hal.btnc.isPressing();
+        lastR = hal.btnr.isPressing();
+    }
+    void guiBusyCallback(const void *) { pollKeys(); }
+} // namespace
+
 namespace GUI
 {
+    // 注册 busy callback(display_init 之后调一次)。之后任何全刷的等 BUSY 期间,
+    // 按键自动进缓冲。pauseButtons 期间后台 tick 停,但 isPressing 是实时 digitalRead,不受影响。
+    void initInput()
+    {
+        clearKeys();
+        display.epd2.setBusyCallback(guiBusyCallback, nullptr);
+    }
+
+    // 阻塞等一个按键事件(刷屏期间由 busy callback 填,非刷屏由本函数 poll 填)。
+    static int waitKeyEvent()
+    {
+        for (;;)
+        {
+            pollKeys();
+            int k = popKey();
+            if (k >= 0) return k;
+            delay(10);
+        }
+    }
+    // 等三键全释放(切场景用,防上次的键带入下一轮)
+    static void waitAllReleased()
+    {
+        while (hal.btnl.isPressing() || hal.btnc.isPressing() || hal.btnr.isPressing())
+            delay(10);
+    }
+
     bool waitLongPress(int btn)
     {
-        // 进入时键已按下;600ms 内一直按住=长按,中途松开=短按
+        // 进入时键已按下;600ms 内一直按住=长按,中途松开=短按。期间顺带 poll 其它键。
         for (int16_t i = 0; i < 60; ++i)
         {
-            if (!btnOf(btn).isPressing())
-                return false;
+            if (!btnOf(btn).isPressing()) return false;
+            pollKeys();
             delay(10);
         }
         return true;
@@ -41,8 +115,7 @@ namespace GUI
         {
             if (u8g2.getCursorX() >= max_x || *str == '\n')
                 u8g2.setCursor(start_x, u8g2.getCursorY() + 18); // 行高适配 wqy16
-            if (*str != '\n')
-                u8g2.print(*str);
+            if (*str != '\n') u8g2.print(*str);
             ++str;
         }
     }
@@ -89,11 +162,9 @@ namespace GUI
             u8g2.print("确定");
         } while (display.nextPage());
 
-        // 等任意键关闭 → 等全释放 → 恢复后台 tick
-        while (!(hal.btnl.isPressing() || hal.btnc.isPressing() || hal.btnr.isPressing()))
-            delay(10);
-        while (hal.btnl.isPressing() || hal.btnc.isPressing() || hal.btnr.isPressing())
-            delay(10);
+        clearKeys();          // 刷窗期间的按键不算(用户还没看清),从干净状态接受确认
+        (void)waitKeyEvent(); // 任意键关闭
+        waitAllReleased();
         hal.pauseButtons = false;
     }
 
@@ -131,14 +202,14 @@ namespace GUI
             u8g2.print(yes);
         } while (display.nextPage());
 
-        while (true)
+        clearKeys();
+        for (;;)
         {
-            if (hal.btnr.isPressing()) { result = true; break; }
-            if (hal.btnl.isPressing()) { result = false; break; }
-            delay(10);
+            int k = waitKeyEvent();
+            if (k == PIN_BUTTONR) { result = true; break; }
+            if (k == PIN_BUTTONL) { result = false; break; }
         }
-        while (hal.btnl.isPressing() || hal.btnc.isPressing() || hal.btnr.isPressing())
-            delay(10);
+        waitAllReleased();
         hal.pauseButtons = false;
         return result;
     }
@@ -166,41 +237,12 @@ namespace GUI
         const int16_t bar_h = (int16_t)((int)n_items * track_h / total);
 
         int pageStart = 0, selected = 0, barPos = 0;
-        bool updated = true, waitc = false;
+        bool updated = true;
         hal.pauseButtons = true;
-        while (true)
+        clearKeys();
+        for (;;)
         {
-            if (hal.btnl.isPressing())
-            {
-                delay(20);
-                if (hal.btnl.isPressing())
-                {
-                    if (selected == 0) selected = total;
-                    --selected;
-                    updated = true;
-                }
-            }
-            if (hal.btnr.isPressing())
-            {
-                delay(20);
-                if (hal.btnr.isPressing())
-                {
-                    ++selected;
-                    if (selected == total) selected = 0;
-                    updated = true;
-                }
-            }
-            if (hal.btnc.isPressing())
-            {
-                delay(20);
-                if (hal.btnc.isPressing())
-                {
-                    if (waitLongPress(PIN_BUTTONC)) { selected = 0; waitc = true; updated = true; }
-                    else break; // 短按中键=确认
-                }
-            }
-
-            if (updated)
+            if (updated) // 进入菜单先刷一帧显示初始菜单;之后每次合并/长按完刷最终态
             {
                 updated = false;
                 if (selected < pageStart) pageStart = selected;
@@ -234,15 +276,30 @@ namespace GUI
                 } while (display.nextPage());
             }
 
-            if (waitc)
+            int k = waitKeyEvent();
+            if (k == PIN_BUTTONC)
             {
-                waitc = false;
-                while (hal.btnc.isPressing()) delay(10);
-                delay(10);
+                if (waitLongPress(PIN_BUTTONC)) { selected = 0; updated = true; } // 长按回首页
+                else break;                                                       // 短按确认
             }
-            delay(10);
+            else
+            {
+                // L/R 移动:开 ~300ms 合并窗口,窗口内连续移动叠加、用户停顿才渲染最终位置。
+                // (墨水屏慢刷:按 N 次【只刷一次】最终位置;代价——单次按键也延迟 ~300ms 才刷)
+                bool moved = false;
+                for (int idle = 0; idle < 30; ) // 30×10ms = 300ms 无新移动事件则结束窗口渲染
+                {
+                    if (k == PIN_BUTTONL) { if (selected == 0) selected = total; --selected; moved = true; idle = 0; }
+                    else if (k == PIN_BUTTONR) { ++selected; if (selected == total) selected = 0; moved = true; idle = 0; }
+                    else if (k >= 0) { pushKey(k); break; } // 积压的 C 等非移动事件放回队列,下轮处理
+                    pollKeys();
+                    k = popKey();
+                    if (k < 0) { ++idle; delay(10); } // 无新事件:累计空闲;有则立即进下轮(不 delay)
+                }
+                if (moved) updated = true;
+            }
         }
-        while (hal.btnc.isPressing()) delay(10);
+        waitAllReleased();
         hal.pauseButtons = false;
         return selected;
     }
@@ -259,26 +316,28 @@ namespace GUI
         if (digits > 8) digits = 8;
 
         hal.pauseButtons = true;
+        clearKeys();
         int cur = pre_value;
         int cd = (int)digits; // 当前位(0=个位)
         int pow = 1;
         for (int i = 0; i < cd; ++i) pow *= 10;
         bool changed = true;
-        while (true)
+        for (;;)
         {
-            if (hal.btnl.isPressing())
+            int k = waitKeyEvent();
+            if (k == PIN_BUTTONL)
             {
                 if (waitLongPress(PIN_BUTTONL)) cd = (cd == (int)digits) ? 0 : cd + 1; // 长按=移位
                 else cur -= pow;                                                       // 短按=减
                 changed = true;
             }
-            else if (hal.btnr.isPressing())
+            else if (k == PIN_BUTTONR)
             {
                 if (waitLongPress(PIN_BUTTONR)) cd = (cd == 0) ? (int)digits : cd - 1;
                 else cur += pow;
                 changed = true;
             }
-            else if (hal.btnc.isPressing())
+            else if (k == PIN_BUTTONC)
             {
                 if (waitLongPress(PIN_BUTTONC)) { cur = pre_value; changed = true; } // 长按=复位
                 else break;                                                           // 短按=确认
@@ -309,9 +368,8 @@ namespace GUI
                     }
                 } while (display.nextPage());
             }
-            delay(10);
         }
-        while (hal.btnc.isPressing()) delay(10);
+        waitAllReleased();
         hal.pauseButtons = false;
         return cur;
     }
@@ -326,24 +384,26 @@ namespace GUI
         const int add[4] = {1, 10, 60, 600}; // 个/十分、个/十时 的分钟步进
 
         hal.pauseButtons = true;
+        clearKeys();
         uint8_t cd = 3;
         int cv = pre_value;
         bool changed = true;
-        while (true)
+        for (;;)
         {
-            if (hal.btnl.isPressing())
+            int k = waitKeyEvent();
+            if (k == PIN_BUTTONL)
             {
                 if (waitLongPress(PIN_BUTTONL)) cd = (cd == 3) ? 0 : cd + 1;
                 else { cv -= add[cd]; if (cv < 0) cv = 0; }
                 changed = true;
             }
-            else if (hal.btnr.isPressing())
+            else if (k == PIN_BUTTONR)
             {
                 if (waitLongPress(PIN_BUTTONR)) cd = (cd == 0) ? 3 : cd - 1;
                 else { cv += add[cd]; if (cv >= 24 * 60) cv = 24 * 60 - 1; }
                 changed = true;
             }
-            else if (hal.btnc.isPressing())
+            else if (k == PIN_BUTTONC)
             {
                 if (waitLongPress(PIN_BUTTONC)) { cv = pre_value; changed = true; }
                 else break;
@@ -374,9 +434,8 @@ namespace GUI
                     }
                 } while (display.nextPage());
             }
-            delay(10);
         }
-        while (hal.btnc.isPressing()) delay(10);
+        waitAllReleased();
         hal.pauseButtons = false;
         return cv;
     }

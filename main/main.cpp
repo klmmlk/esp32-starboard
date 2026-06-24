@@ -99,6 +99,7 @@ extern "C" void app_main()
     initArduino();
     hal.init();        // 含 WiFi+NTP(首次对时;唤醒后会重连,几秒;连不上 8s 超时放弃)
     display_init();
+    GUI::initInput();  // 注册 busy callback:全刷 ~5s 期间按键进缓冲,GUI 消费不丢键(见风险#3)
 
     const char *why = !hal.wakeUpFromDeepSleep ? "首次上电"
                     : hal.wakeupButton >= 0    ? "按键唤醒"

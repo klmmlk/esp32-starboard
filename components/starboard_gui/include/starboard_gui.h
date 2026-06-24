@@ -30,6 +30,10 @@ typedef struct
 
 namespace GUI
 {
+    // 注册 busy callback(在 display_init 之后、首次 GUI 交互前调一次)。
+    // 之后全刷等 BUSY 期间(~5s)按键自动进缓冲,GUI 消费——刷屏期间按键不丢。
+    void initInput();
+
     // 检测长按:进入时键已按下,持续按住 ~600ms 返回 true(长按),中途松开返回 false(短按)。
     // btn 取 PIN_BUTTONL / PIN_BUTTONC / PIN_BUTTONR。
     bool waitLongPress(int btn);
