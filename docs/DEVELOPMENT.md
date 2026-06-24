@@ -73,16 +73,16 @@ esp32-starboard/
 | 屏幕 RST | CONFIG_PIN_RST=18（当前用 7） | ____ | |
 | 屏幕 BUSY | CONFIG_PIN_BUSY=19（当前用 9） | ____ | |
 | 屏幕 SPI SCK/MOSI | 默认（当前 SCK=12/MOSI=11） | ____ | |
-| 左键 BUTTONL | 4 | ____ |  RTC GPIO |
-| 中键 BUTTONC | 5 | ____ |  RTC GPIO |
-| 右键 BUTTONR | 6 | ____ | RTC GPIO |
-| 按键有效电平 | active-low（LiClock 自动检测） | ____ | 高/低电平触发 |
+| 左键 BUTTONL | 4 | **4**（代码已定） | RTC GPIO |
+| 中键 BUTTONC | 5 | **5**（代码已定） | RTC GPIO |
+| 右键 BUTTONR | 6 | **6**（代码已定） | RTC GPIO |
+| 按键有效电平 | active-low（LiClock 自动检测） | **active-low=true**（代码已定） | 高/低电平触发 |
 | 电池 ADC | PIN_ADC=33 | ____ | ⚠️ S3 不可用 33，换 ADC1 通道；分压比 |
 | 充电状态 | PIN_CHARGING=26 | ____ | |
 | SD 卡 CS/MOSI/MISO/SCLK | 14/12/13/15 | ____ | 或确认暂不用 SD |
 | SD 卡检测 | 2 | ____ | 可选 |
 | SD 电源控制 | 27 | ____ | 可选 |
-| 蜂鸣器 | PIN_BUZZER=21 | ____ | LEDC 驱动 |
+| 蜂鸣器 | PIN_BUZZER=21 | **40（有源，M6 暂缓）** | ⚠️ 有源 on/off，非 LiClock 无源 LEDC |
 | I2C SDA/SCL | 23/22 | ____ | 传感器用（本工程暂无传感器） |
 | Flash 总大小 | 8MB（LiClock factory 3MB + spiffs 1MB） | 8MB（默认/待确认） | 决定分区表大小；占位按 8MB |
 | PSRAM | 已开 | 已开 ✓ Quad | 现有 sdkconfig 检测为 Quad；若 Octal 改 sdkconfig.defaults |
@@ -125,44 +125,48 @@ esp32-starboard/
 
 ---
 
-### 阶段 1：HAL（按键 + 电源 + WiFi 配网 + NTP + 深睡）  ⬜
+### 阶段 1：HAL（按键 + 电源 + WiFi 配网 + NTP + 深睡）  🔄(M1/M3/M4/M5 完成 · M2 跳过 · M6 暂缓)
 
 **目标**：硬件抽象层，参考 LiClock `src/hal.cpp`（806 行）+ `include/hal.h` 重写为 `starboard_hal`。
 
 **参考**：`LiClock/src/hal.cpp`、`hal.h`、`battery.cpp`、`alarm.cpp`。
 
 **Checklist**：
-- [ ] 按键：OneButton 三键，保留 `hookButton`/`detachAllButtonEvents`/`task_hal_update` 轮询 tick
-- [ ] 深睡/唤醒：移植 `goSleep`/`powerOff`/`set_sleep_set_gpio_interrupt`，适配 S3 RTC GPIO 唤醒约束，保留 `RTC_DATA_ATTR`
-- [ ] **删除** LiClock 的 `refresh_partition_table()` + `test_littlefs_size()`（运行时魔改分区表，风险高），改用固定 partitions.csv
-- [ ] WiFi 配网①：SmartConfig（`WiFi.beginSmartConfig`）
-- [ ] WiFi 配网②：AP + DNS 劫持 + Web 配置页（`WiFiConfigManual` + `DNSServer`）
-- [ ] WiFi 配网③：离线模式
-- [ ] NTP：移植 `getTime` 时钟频率偏移补偿（`delta`/`every`/`lastsync`）+ sntp；无 DS3231，走纯 NTP 软件补偿
-- [ ] 电压检测：`analogRead` 分压换算（S3 ADC1 引脚）
-- [ ] 蜂鸣器 Buzzer：确认 arduino-esp32 3.x 的 LEDC API（`ledcAttachPin`/`ledcDetachPin`）
-- [ ] Preferences 配置存取 + config.json (ArduinoJson)
-- [ ] 验证：串口看按键事件；深睡按键唤醒恢复；AP 配网页可开
+- [x] 按键：OneButton 三键 + `task_hal_update` 轮询任务（20ms tick）。⚠️ `hookButton`/`detachAllButtonEvents` 属 App 层接口，留阶段3 AppManager 接管；当前 HAL 仅串口打印事件。
+- [x] 深睡/唤醒：`goSleep()` = ext1 `ESP_EXT1_WAKEUP_ANY_LOW` + `rtc_gpio_pullup_en` + `RTC_PERIPH=ON` + `RTC_DATA_ATTR bootCount`。按 S3 官方睡眠文档重写（非照搬 LiClock 的 `ALL_LOW`）。
+- [x] **删除** LiClock 的 `refresh_partition_table()` + `test_littlefs_size()`，改用固定 `partitions.csv`（工程从一开始就没移植这两个函数）。
+- [x] WiFi 配网：**SmartConfig**（`SC_TYPE_ESPTOUCH_AIRKISS`，原生 `esp_smartconfig_*`，非 arduino `WiFi.beginSmartConfig`）。微信「乐鑫 AirKiss」小程序 / ESPTouch APP 推送。
+- [ ] ⏭️ WiFi 配网② AP+DNS劫持 / ③ 离线模式：**弃用**（原计划①DPP 国产机扫不出、②AP 劫持需额外 APP，实测后均弃，最终选 SmartConfig；离线降级由 wifiInit 超时→用本地 RTC 时间显示覆盖）。
+- [x] NTP：`esp_netif_sntp` 单源 `ntp.aliyun.com` + `sync_cb`。⚠️ 未移植 LiClock 时钟频率偏移软件补偿（`delta`/`every`/`lastsync`），纯 SNTP；长期漂移若明显再补。
+- [ ] ⏭️ 电压检测：**跳过**（开发板暂无电池）。`VCC`/`USBPluggedIn`/`isCharging` 字段已留位，`update()` 待硬件就绪补采样。
+- [ ] ⏭️ 蜂鸣器 Buzzer：**暂缓**（用户改接【有源】蜂鸣器 GPIO40，与 LiClock 无源 LEDC 频率驱动不同，播不了旋律；方案待定）。
+- [x] Preferences：`pref.begin("starboard")` NVS 存取。⚠️ `config.json`(ArduinoJson) 暂无 App 消费，留阶段3。
+- [x] 🔶 **新增（非 LiClock）**：WiFi 重连退避（线性 backoff，达 6 次停）+ `wifiInit(timeoutSec=8)` 阻塞等连接超时（防连不上旧 WiFi 挂死 app）。
+- [x] 验证：✅ 串口看按键事件 / 深睡按键+定时双路唤醒恢复 / SmartConfig 配网→NTP 同步北京时间 / bootCount 跨深睡递增。
+
+**状态**：M1/M3/M4/M5 已完成并烧录验证；M2（电池）/M6（蜂鸣器）因硬件待定暂缓跳过。HAL 主体完成，后续 App 消费时按需补 `config.json`、电压采样。
 
 **风险**：S3 深睡唤醒引脚必须 RTC GPIO；arduino-esp32 3.x 的 LEDC/DNSServer/SmartConfig 逐项实测。
 
 ---
 
-### 阶段 2：显示 + GUI（三色屏适配）  ⬜
+### 阶段 2：显示 + GUI（三色屏适配）  🔄(2a display 完成 · 2b 事件驱动刷新进行中)
 
 **目标**：三色屏显示层与 GUI 工具，参考 LiClock `src/GUI.cpp` + `graph.cpp` + `include/GUI.h`。
 
 **参考**：`LiClock/src/GUI.cpp`、`graph.cpp`、`include/GUI.h`。
 
 **Checklist**：
-- [x] `starboard_display`：display 全局实例（`GxEPD2_3C<GxEPD2_420c_GDEY042Z98,...>`，引脚沿用 CS=10/DC=8/RST=7/BUSY=9）
-- [x] 三色屏策略：删 LiClock 局部刷新 `display.display(false)`，统一全屏 `display.display()`（注：经核验，`display(false)` 的参数本就是"是否局部刷新"，默认 false=全屏，LiClock 调的 `display.display(false)` 已是全屏；三色屏真正要避免的是 partial/带 true 的局部刷。本项目统一 `setFullWindow`/`firstPage`/`nextPage` 全刷）
-- [x] 语义颜色定义：`COL_NORMAL=GxEPD_BLACK`、`COL_ALERT=GxEPD_RED`、`COL_BG=GxEPD_WHITE`（`starboard_display.h`，本项目新增——LiClock 黑白屏无红色用法）
-- [ ] 红色约定：低电量/充电/闹钟/错误/天气预警→红，其余黑（GUI 层集中处理）
-- [ ] 排版坐标从 296×128 → 400×300 重做
-- [ ] 中文字体：`U8g2_for_Adafruit_GFX` + `u8g2_font_wqy12_t_gb2312`（已搭好框架，默认主字体改用 15px `u8g2_font_wqy15_t_gb2312`；其余字号在 GUI 层按场景切换）
-- [ ] `starboard_gui`：移植 `msgbox`/`msgbox_yn`/`msgbox_number`/`msgbox_time`/`menu`/`drawWindowsWithTitle`/`drawLBM`/`autoIndentDraw`
-- [ ] 验证：中文 msgbox + 红色渲染 + 菜单可切，全屏刷新无残影
+- [x] `starboard_display`：display 全局实例（`GxEPD2_3C<GxEPD2_420c_GDEY042Z98, HEIGHT>`）+ `display_init()`/`display_deinit()`，引脚 CS=10/DC=8/RST=7/BUSY=9。
+- [x] 三色屏策略：统一全屏 `setFullWindow`/`firstPage`/`nextPage` 全刷，**不碰 partial**（`hasFastPartialUpdate=false`）。⚠️ 局刷路线经实测否决（见风险#3）：`nextPageBW`/局部刷新在 GDEY042Z98 上串色+残影+仍全屏闪，Waveshare 官方库亦无 partial API。
+- [x] 语义颜色定义：`COL_NORMAL=GxEPD_BLACK`、`COL_ALERT=GxEPD_RED`、`COL_BG=GxEPD_WHITE`（`starboard_display.h`，本项目新增）。
+- [ ] 🔶 红色约定：低电量/充电/闹钟/错误/天气预警→红，规则已定（风险#3）；GUI 层集中处理待 starboard_gui。
+- [ ] 🔶 排版坐标 296×128 → 400×300：主时钟骨架已重排（main.cpp demo 顶部大字时间+中文日期+红色行+状态栏）；GUI 通用布局待 starboard_gui。
+- [x] 中文字体：`U8g2_for_Adafruit_GFX` + 默认主字体 `u8g2_font_wqy16_t_gb2312`（**16px**，库内唯一含 ASCII+全 GB2312 全字库）。
+- [ ] `starboard_gui`：移植 `msgbox`/`msgbox_yn`/`msgbox_number`/`msgbox_time`/`menu`/`drawWindowsWithTitle`/`drawLBM`/`autoIndentDraw`（**未开始**）。
+- [ ] 🔶 验证：✅ 红色全刷渲染 + 中文显示 + 全刷无残影（main.cpp demo 已验证）；中文 msgbox/菜单交互待 starboard_gui。
+
+**状态**：2a（display 组件 + 全刷策略 + 语义颜色 + 中文字体）已完成并进 commit `1327c42`；2b 事件驱动刷新策略已定型（main.cpp demo 演进为"事件+定时兜底"），待 starboard_gui。
 
 **风险**：三色屏不支持局部刷新（残影/串色）；坐标全重排。
 
@@ -260,9 +264,11 @@ esp32-starboard/
 - 2026-06-23 —— ✅ **阶段1-M3/M4 完成(WiFi 配网 + NTP 对时)**。配网选型:先做 **DPP**,实测国产 Android **扫不出配网**(系统相机把 `DPP:` URI 当文本,国产 ROM 无 Easy Connect 入口)→ 弃用;`wifi_prov_mgr` SoftAP 需手机装官方 APP(用户偏好不装)→ 弃;最终选 **SmartConfig(`SC_TYPE_ESPTOUCH_AIRKISS`)**:手机用**微信「AirKiss」小程序**(国产机人人有微信、无需装额外 APP)或 ESPTouch APP,UDP 广播把 SSID+密码发给设备,设备侦听接收。NTP 用官方 `esp_netif_sntp`(单源 `ntp.aliyun.com`,GOT_IP 后启动)。验证:微信小程序配网→设备收 SSID→连接→NTP 同步北京时间→重启自动直连。
 - 2026-06-23 —— M3/M4 坑(均含教训):① **DPP 链接错**(`esp_supp_dpp_*` undefined):`CONFIG_ESP_WIFI_DPP_SUPPORT=y` 改了 sdkconfig.defaults **没 reconfigure**,已有 sdkconfig 优先级更高、wpa_supplicant 没编译 esp_dpp.c。⚠️ 印证阶段0 教训:改 sdkconfig.defaults 必须 fullclean/reconfigure。② **NTP 多源编译错**:`ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE` 传 2 服务器报「too many initializers」——`servers[]` 大小受 `CONFIG_LWIP_SNTP_MAX_SERVERS` 限制(默认 1),改单源 `ESP_NETIF_SNTP_DEFAULT_CONFIG`。③ **SmartConfig 用原生 IDF `esp_smartconfig_*`**(在 esp_wifi 组件),非 arduino WiFi 库封装(后者 3.x 已移除)——别被「3.x 移除 SmartConfig」误导。④ 凭据存 **esp_wifi 默认 NVS**(`esp_wifi_get_config` 判已配网),不用 pref。⚠️ 教训:配网方案先验证**目标手机生态**(国产机:微信小程序/不装 APP 优先),别只看协议先进性(DPP 官方推荐但国产机不支持)。
 - 2026-06-24 —— **阶段1 收尾决策 + 阶段2 启动**。① 蜂鸣器(M6):用户改接 **有源蜂鸣器(GPIO40)**——与 LiClock 无源(LEDC 频率驱动)驱动方式完全不同(有源只能 on/off、播不了旋律),原计划方案推翻;经讨论用户决定**暂时跳过 M6**,留到硬件/方案定了再做。② 电池(M2 电压检测):**开发板暂无电池,跳过**;M2 的配置持久化部分无 App 消费也暂搁。③ 据此阶段1 暂停于"M1/M3/M4/M5 已完成",转入**阶段2(显示+GUI)**——它不依赖电池/蜂鸣器,屏幕引脚已验证,可独立推进。
-- 2026-06-24 —— **阶段2a 完成**(`starboard_display` 组件,待编译验证)。把原散在 `main.cpp` 的 display 实例抽成独立 IDF 组件:`GxEPD2_3C<GxEPD2_420c_GDEY042Z98, HEIGHT>` 全局实例 + `U8G2_FOR_ADAFRUIT_GFX u8g2` + 统一全刷初始化 `display_init()`/`display_deinit()`。新增**语义颜色**(本项目新增,LiClock 黑白屏无红色):`COL_NORMAL=黑/COL_ALERT=红/COL_BG=白`。中文字体默认 `u8g2_font_wqy15_t_gb2312`(15px)。main.cpp 改为验证 demo:主时钟骨架(顶部黑大字时间 + 中部黑中文 + **红色**预警中文 + 底部状态栏)。main/CMakeLists REQUIRES 由 `GxEPD2` 换成 `starboard_display`(后者 PUBLIC 传递 GxEPD2/U8g2/Adafruit_GFX)。
+- 2026-06-24 —— **阶段2a 完成**(`starboard_display` 组件,待编译验证)。把原散在 `main.cpp` 的 display 实例抽成独立 IDF 组件:`GxEPD2_3C<GxEPD2_420c_GDEY042Z98, HEIGHT>` 全局实例 + `U8G2_FOR_ADAFRUIT_GFX u8g2` + 统一全刷初始化 `display_init()`/`display_deinit()`。新增**语义颜色**(本项目新增,LiClock 黑白屏无红色):`COL_NORMAL=黑/COL_ALERT=红/COL_BG=白`。中文字体默认 `u8g2_font_wqy16_t_gb2312`(16px;订正:此前误写 15px,代码 `CN_FONT_MAIN` 实为 16px)。main.cpp 改为验证 demo:主时钟骨架(顶部黑大字时间 + 中部黑中文 + **红色**预警中文 + 底部状态栏)。main/CMakeLists REQUIRES 由 `GxEPD2` 换成 `starboard_display`(后者 PUBLIC 传递 GxEPD2/U8g2/Adafruit_GFX)。
 - 2026-06-24 —— **阶段2 刷新策略定案(纯事件驱动)**。① 局刷实测否决(见风险#3)。② 派 agent 调研 LiClock 刷新机制:LiClock 是【深睡 + 定时/按键唤醒 + setup()画一帧】的**事件驱动架构**(`loop()` 自删,逻辑跑在 `task_appManager` 状态机),**非后台定时刷屏**——这层可照搬,三色屏全刷的慢可被深睡掩盖。但其【主时钟每分钟局刷更新分钟数】(`appClock.cpp:198` `display(true)`)与【GUI 菜单每按一次键局刷重画选中框】(`GUI.cpp:246` `displayWindow`)是局刷核心用途,三色屏**必须改造**:放弃分钟实时刷新、菜单改"浏览不刷/确认才刷"、`push_buffer/pop_buffer` 缓冲区栈因 GxEPD2_3C 不支持 `swapBuffer` 改为整屏重画。③ 经确认采用【**纯事件驱动**】刷新:平时深睡,屏幕静态保持(墨水屏断电保持特性),仅按键/天气更新/闹钟触发全刷一帧。④ main.cpp 改为纯事件驱动全刷验证 demo(`refreshMainFrame()` 全刷一帧 + millis 测耗时 → `goSleep(0)` 纯按键唤醒),用于实测全刷耗时(后续所有交互的时间基准)。待用户烧录报实测耗时。
 - 2026-06-24 —— 阶段2a 调研要点(经源码 + context7 GxEPD2 官方文档双重核实):① **三色屏全刷模式**与官方 GxEPD2_GFX_Example 一致(`setFullWindow`→`firstPage`→`do{ 绘制 }while nextPage`),绘制须在循环体内**每页重画**。② **420c 三色屏底层全刷**:`GxEPD2_420c_GDEY042Z98.h` 注释明示"has partial window addressing, but uses full window refresh",`hasFastPartialUpdate=false`→ 本项目**不碰 partial**,无需额外禁用。③ **`display(false)` 是全屏不是局部**:LiClock 调的 `display.display(false)` 已是全屏(参数=是否局部),真正要避免的是 partial/带 true 的局部刷;文档原"删 display.display(false)"表述已更正。④ **u8g2 颜色独立**:与 `display.setTextColor` 互不相干,画中文前须各自 `u8g2.setForegroundColor`;`drawUTF8(x,y,str)` 显式带坐标、不依赖游标。⑤ 字体符号声明在 `U8g2_for_Adafruit_GFX.h`,cpp 无需额外 include `u8g2_fonts.h`。
+- 2026-06-24 —— **阶段1 WiFi 健壮性补强**(已进 commit `1327c42`)。① 连接阻塞+超时:`wifiInit(timeoutSec=8)` 轮询 wifiState,连上/配网中即返回,超时设 `Failed` 并把退避计数顶到上限停重连(防"连不上旧 WiFi → 反复重连刷屏/耗电 → app 无限挂死")。② 断线线性退避:`WIFI_EVENT_STA_DISCONNECTED` 上按失败次数 0.5s/1s/1.5s… 递增 backoff,达 6 次停(密码错/找不到 AP 持续失败时让设备消停,等下次唤醒再试)。③ 连上(GOT_IP)清零失败计数。⚠️ 教训:墨水屏+深睡设备连不上网不能疯狂重试(刷屏+耗电+卡死 app),必须有【超时放弃+退避】兜底。
+- 2026-06-24 —— **阶段2b 前置:main.cpp 演进为【事件 + 定时兜底】混合刷新 demo**。在原"纯事件驱动全刷"基础上:① 加定时兜底(`REFRESH_INTERVAL_SEC=15min`),`goSleep(sec)` 同时开 timer+按键双路唤醒(先到先触发),挂着不动时信息也不至于过时太久;② 配网模式(`wifiState==Provisioning`)**保持唤醒不睡**(否则用户来不及用微信推 WiFi),刷配网提示页后轮询最长 5 分钟等 `Connected`;③ 时间有效性改判 `tm_year>120`(深睡 RTC 维持走时,即便本次没连上 NTP 只要对过时就有准时间),不再只依赖 `timeSynced`。⏳ **待用户烧录报【全刷实测耗时】**(firstPage~nextPage 段,不含 WiFi),据此定交互响应节奏/兜底间隔。
 
 ---
 

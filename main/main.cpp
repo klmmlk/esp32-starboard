@@ -68,7 +68,7 @@ static uint32_t refreshMainFrame()
 //   - 定时:每 REFRESH_INTERVAL_SEC 秒兜底唤醒刷新一次(挂着不动时信息不过时太久)。
 //   底层:hal.goSleep(sec) 同时开 timer(sec 后)+按键(ext1)两路唤醒,先到先触发。
 //   阶段3 AppManager 会把它封装成 setTimer()/nextWakeup(移植自 LiClock)供各 App 调用。
-static constexpr uint32_t REFRESH_INTERVAL_SEC = 1 * 60; // 默认 15 分钟兜底刷新
+static constexpr uint32_t REFRESH_INTERVAL_SEC = 5 * 60; // 默认 15 分钟兜底刷新
 
 extern "C" void app_main()
 {
