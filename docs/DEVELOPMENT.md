@@ -150,7 +150,7 @@ esp32-starboard/
 
 ---
 
-### 阶段 2：显示 + GUI（三色屏适配）  🔄(2a display 完成 · 2b 事件驱动刷新进行中)
+### 阶段 2：显示 + GUI（三色屏适配）  🔄(2a display + 2b GUI 移植完成 · 待烧录验证)
 
 **目标**：三色屏显示层与 GUI 工具，参考 LiClock `src/GUI.cpp` + `graph.cpp` + `include/GUI.h`。
 
@@ -160,13 +160,13 @@ esp32-starboard/
 - [x] `starboard_display`：display 全局实例（`GxEPD2_3C<GxEPD2_420c_GDEY042Z98, HEIGHT>`）+ `display_init()`/`display_deinit()`，引脚 CS=10/DC=8/RST=7/BUSY=9。
 - [x] 三色屏策略：统一全屏 `setFullWindow`/`firstPage`/`nextPage` 全刷，**不碰 partial**（`hasFastPartialUpdate=false`）。⚠️ 局刷路线经实测否决（见风险#3）：`nextPageBW`/局部刷新在 GDEY042Z98 上串色+残影+仍全屏闪，Waveshare 官方库亦无 partial API。
 - [x] 语义颜色定义：`COL_NORMAL=GxEPD_BLACK`、`COL_ALERT=GxEPD_RED`、`COL_BG=GxEPD_WHITE`（`starboard_display.h`，本项目新增）。
-- [ ] 🔶 红色约定：低电量/充电/闹钟/错误/天气预警→红，规则已定（风险#3）；GUI 层集中处理待 starboard_gui。
-- [ ] 🔶 排版坐标 296×128 → 400×300：主时钟骨架已重排（main.cpp demo 顶部大字时间+中文日期+红色行+状态栏）；GUI 通用布局待 starboard_gui。
+- [x] 🔶 红色约定：GUI 层语义色 `COL_NORMAL`/`COL_ALERT`/`COL_BG` 已落地（starboard_gui 标题/告警可用 `COL_ALERT`）；「低电量/充电→红」等具体规则待 App 消费时按场景调用。
+- [x] 🔶 排版坐标 296×128 → 400×300：主时钟骨架 + GUI（msgbox 280×190、menu 340×270、number/time 220×120）均已用 `SCREEN_WIDTH/HEIGHT` 居中重排。
 - [x] 中文字体：`U8g2_for_Adafruit_GFX` + 默认主字体 `u8g2_font_wqy16_t_gb2312`（**16px**，库内唯一含 ASCII+全 GB2312 全字库）。
-- [ ] `starboard_gui`：移植 `msgbox`/`msgbox_yn`/`msgbox_number`/`msgbox_time`/`menu`/`drawWindowsWithTitle`/`drawLBM`/`autoIndentDraw`（**未开始**）。
-- [ ] 🔶 验证：✅ 红色全刷渲染 + 中文显示 + 全刷无残影（main.cpp demo 已验证）；中文 msgbox/菜单交互待 starboard_gui。
+- [x] `starboard_gui`：移植 `msgbox`/`msgbox_yn`/`msgbox_number`/`msgbox_time`/`menu`/`drawWindowsWithTitle`/`autoIndentDraw`/`waitLongPress`。删 LiClock 的 `push_buffer`/`pop_buffer`（本项目 `GxEPD2_3C` **无** `swapBuffer`/`copyBuffer`/`current_buffer_idx`）→ 弹窗**不恢复背景**、返回后上层重画；每次画面变化全刷分页；颜色语义化；坐标 400×300；按键 `hal.btn*.isPressing()` 轮询 + `hal.pauseButtons` 暂停后台 tick 防 GUI 期间左键长按触发深睡。menu 刷新=**移动即全刷**（用户选定）。`drawLBM`/`fileDialog`（需 LittleFS）、`graph.cpp`（天气专用）后置。
+- [ ] 🔶 验证：✅ 红色全刷渲染 + 中文显示 + 全刷无残影（main.cpp 主帧 demo 已验证）；中文 msgbox/msgbox_yn/menu 交互**待烧录**（main.cpp 中键唤醒进 `guiDemo`）。
 
-**状态**：2a（display 组件 + 全刷策略 + 语义颜色 + 中文字体）已完成并进 commit `1327c42`；2b 事件驱动刷新策略已定型（main.cpp demo 演进为"事件+定时兜底"），待 starboard_gui。
+**状态**：2a（display + 全刷策略 + 语义色 + 中文字体）完成（commit `1327c42`）；2b 事件驱动刷新 + `starboard_gui` 移植完成（**待编译+烧录验证**）。⏳ 待用户烧录报【全刷实测耗时】+ GUI 交互验证（msgbox/菜单全刷无残影）。
 
 **风险**：三色屏不支持局部刷新（残影/串色）；坐标全重排。
 
@@ -269,6 +269,7 @@ esp32-starboard/
 - 2026-06-24 —— 阶段2a 调研要点(经源码 + context7 GxEPD2 官方文档双重核实):① **三色屏全刷模式**与官方 GxEPD2_GFX_Example 一致(`setFullWindow`→`firstPage`→`do{ 绘制 }while nextPage`),绘制须在循环体内**每页重画**。② **420c 三色屏底层全刷**:`GxEPD2_420c_GDEY042Z98.h` 注释明示"has partial window addressing, but uses full window refresh",`hasFastPartialUpdate=false`→ 本项目**不碰 partial**,无需额外禁用。③ **`display(false)` 是全屏不是局部**:LiClock 调的 `display.display(false)` 已是全屏(参数=是否局部),真正要避免的是 partial/带 true 的局部刷;文档原"删 display.display(false)"表述已更正。④ **u8g2 颜色独立**:与 `display.setTextColor` 互不相干,画中文前须各自 `u8g2.setForegroundColor`;`drawUTF8(x,y,str)` 显式带坐标、不依赖游标。⑤ 字体符号声明在 `U8g2_for_Adafruit_GFX.h`,cpp 无需额外 include `u8g2_fonts.h`。
 - 2026-06-24 —— **阶段1 WiFi 健壮性补强**(已进 commit `1327c42`)。① 连接阻塞+超时:`wifiInit(timeoutSec=8)` 轮询 wifiState,连上/配网中即返回,超时设 `Failed` 并把退避计数顶到上限停重连(防"连不上旧 WiFi → 反复重连刷屏/耗电 → app 无限挂死")。② 断线线性退避:`WIFI_EVENT_STA_DISCONNECTED` 上按失败次数 0.5s/1s/1.5s… 递增 backoff,达 6 次停(密码错/找不到 AP 持续失败时让设备消停,等下次唤醒再试)。③ 连上(GOT_IP)清零失败计数。⚠️ 教训:墨水屏+深睡设备连不上网不能疯狂重试(刷屏+耗电+卡死 app),必须有【超时放弃+退避】兜底。
 - 2026-06-24 —— **阶段2b 前置:main.cpp 演进为【事件 + 定时兜底】混合刷新 demo**。在原"纯事件驱动全刷"基础上:① 加定时兜底(`REFRESH_INTERVAL_SEC=15min`),`goSleep(sec)` 同时开 timer+按键双路唤醒(先到先触发),挂着不动时信息也不至于过时太久;② 配网模式(`wifiState==Provisioning`)**保持唤醒不睡**(否则用户来不及用微信推 WiFi),刷配网提示页后轮询最长 5 分钟等 `Connected`;③ 时间有效性改判 `tm_year>120`(深睡 RTC 维持走时,即便本次没连上 NTP 只要对过时就有准时间),不再只依赖 `timeSynced`。⏳ **待用户烧录报【全刷实测耗时】**(firstPage~nextPage 段,不含 WiFi),据此定交互响应节奏/兜底间隔。
+- 2026-06-24 —— **阶段2b starboard_gui 移植完成**(待编译+烧录验证)。新建 `components/starboard_gui/`(`.h`/`.cpp`/CMakeLists),移植 LiClock `GUI.cpp` 的 msgbox/msgbox_yn/msgbox_number/msgbox_time/menu/drawWindowsWithTitle/autoIndentDraw/waitLongPress。三色屏改造:① 删 push_buffer/pop_buffer——本项目 `GxEPD2_3C` **全库无** `swapBuffer`/`copyBuffer`/`current_buffer_idx`(grep 确认:LiClock 那版 GxEPD2 有、本项目版没有),故弹窗【不恢复背景】、返回后上层重画;② 每次画面变化用 `setFullWindow`/`firstPage`/`nextPage` 全刷分页;③ 颜色硬编码 0/1→COL_NORMAL/ALERT/BG;④ 坐标 296×128→400×300 居中、窗口放大(msgbox 280×190/menu 340×270);⑤ 按键 `hal.btn*.isPressing()` 阻塞轮询。⚠️ **关键坑**:hal 的 `task_hal_update` 是**独立任务**,GUI 阻塞轮询期间后台仍 tick,用户在 GUI 里按左键(否/减)稍久会触发长按回调→`wantSleep`→深睡打断交互——给 HAL 加 `volatile bool pauseButtons` 字段,`task_hal_update` 门控(GUI 期间跳过 tick+深睡),starboard_gui 进出阻塞函数成对切换;`isPressing()` 不受影响(实时 digitalRead)。menu 刷新策略经确认=**移动即全刷**(实时可见,代价每次按键等一次全刷;用户接受,若实测太慢再回头改)。drawLBM/fileDialog(需 LittleFS)、graph.cpp(天气专用)本轮后置。main.cpp 加 `guiDemo`:中键唤醒→msgbox→msgbox_yn→menu→刷回主帧。⚠️ 待用户 `idf.py build` + 烧录验证(本环境无 idf.py);顺带报【全刷实测耗时】。若编译报 `Fonts/FreeSans9pt7b.h` 找不到,给 `starboard_gui/CMakeLists` 加 `REQUIRES Adafruit_GFX`(msgbox_number/time 数字字体经 Adafruit_GFX,正常经 starboard_display→GxEPD2→Adafruit_GFX 传递可见)。
 
 ---
 

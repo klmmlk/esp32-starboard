@@ -7,5 +7,5 @@
 idf_component_register(
     SRCS "main.cpp"
     INCLUDE_DIRS "."
-    REQUIRES arduino-esp32 starboard_config starboard_hal starboard_display
+    REQUIRES arduino-esp32 starboard_config starboard_hal starboard_display starboard_gui
 )

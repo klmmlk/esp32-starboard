@@ -35,6 +35,10 @@ public:
     OneButton btnl = OneButton(PIN_BUTTONL, BUTTON_ACTIVE_LOW);
     OneButton btnc = OneButton(PIN_BUTTONC, BUTTON_ACTIVE_LOW);
     OneButton btnr = OneButton(PIN_BUTTONR, BUTTON_ACTIVE_LOW);
+    /** GUI 阻塞交互期间置 true:task_hal_update 暂停 tick 与深睡处理,防
+     *  GUI 里按左键(否/减)稍久被后台长按回调触发 wantSleep→深睡打断交互。
+     *  starboard_gui 进出阻塞函数时自动配对切换。isPressing() 不受影响(实时 digitalRead)。 */
+    volatile bool pauseButtons = false;
     /** 三个按键各 tick 一次,周期调用(由内部任务保证)。 */
     void tickButtons();
     /** 阻塞到三个按键都松开(LiClock 同名函数,切 App 时用)。 */

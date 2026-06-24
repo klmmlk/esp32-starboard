@@ -36,12 +36,15 @@ static void task_hal_update(void *)
 {
     while (true)
     {
-        hal.tickButtons();
-        // 在 tick() 返回后的干净栈上执行深睡,不在 OneButton 回调栈里跑 esp_sleep(防重入/深栈)
-        if (hal.wantSleep)
+        if (!hal.pauseButtons) // GUI 阻塞交互期间暂停 tick + 深睡(防左键长按打断 GUI)
         {
-            hal.wantSleep = false;
-            hal.goSleep(hal.sleepSec);
+            hal.tickButtons();
+            // 在 tick() 返回后的干净栈上执行深睡,不在 OneButton 回调栈里跑 esp_sleep(防重入/深栈)
+            if (hal.wantSleep)
+            {
+                hal.wantSleep = false;
+                hal.goSleep(hal.sleepSec);
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(20)); // 20ms 轮询,足够检测人手速度
     }

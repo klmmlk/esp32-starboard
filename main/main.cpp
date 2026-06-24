@@ -18,6 +18,7 @@
 #include <starboard_config.h>
 #include <starboard_hal.h>
 #include <starboard_display.h>
+#include <starboard_gui.h>
 
 // 全刷一帧(主时钟骨架)+ 返回刷新耗时(ms)。
 // 绘制须在 do{}while(nextPage) 循环内【每页重画】(GxEPD2 分页全刷规则)。
@@ -61,6 +62,29 @@ static uint32_t refreshMainFrame()
         u8g2.drawUTF8(20, 285, "按任意键刷新一帧 · 平时深睡");
     } while (display.nextPage());
     return millis() - t0;
+}
+
+// 中键唤醒时跑的 GUI 演示:msgbox → msgbox_yn → menu → 刷回主帧。
+// 验证 starboard_gui 在三色屏全刷下的渲染 / 交互 / 颜色语义 / 全刷不残影。
+static void guiDemo()
+{
+    Serial.println("[DEMO] 中键唤醒 → GUI 演示");
+    GUI::msgbox("提示", "starboard_gui 验证\n按任意键继续");
+    if (GUI::msgbox_yn("确认", "要打开菜单吗?"))
+    {
+        static const menu_item opts[] = {
+            {nullptr, "时钟"},
+            {nullptr, "设置"},
+            {nullptr, "WiFi 配网"},
+            {nullptr, "亮度调节"},
+            {nullptr, "关于"},
+            {nullptr, "重启"},
+            {nullptr, nullptr}, // 结束哨兵
+        };
+        int sel = GUI::menu("菜单", opts);
+        Serial.printf("[DEMO] 菜单选择索引:%d\n", sel);
+    }
+    refreshMainFrame(); // GUI 不恢复背景(全刷无缓冲),上层自行刷回主帧
 }
 
 // 【刷新策略】事件 + 定时兜底(混合)。
@@ -108,10 +132,17 @@ extern "C" void app_main()
         Serial.println("[DEMO] 配网等待结束,刷新主界面...");
     }
 
-    uint32_t ms = refreshMainFrame();
-    Serial.printf("[DEMO] 全刷耗时 %lu ms (%.1f s)\n", (unsigned long)ms, ms / 1000.0f);
-    Serial.printf("[DEMO] 刷完 → 进深睡。按键 或 %lu 分钟后 自动唤醒刷新。\n",
-                  (unsigned long)(REFRESH_INTERVAL_SEC / 60));
+    if (hal.wakeUpFromDeepSleep && hal.wakeupButton == PIN_BUTTONC)
+    {
+        guiDemo(); // 中键唤醒 → GUI 验证(msgbox/yn/menu),末尾刷回主帧
+    }
+    else
+    {
+        uint32_t ms = refreshMainFrame();
+        Serial.printf("[DEMO] 全刷耗时 %lu ms (%.1f s)\n", (unsigned long)ms, ms / 1000.0f);
+        Serial.printf("[DEMO] 刷完 → 进深睡。按键 或 %lu 分钟后 自动唤醒刷新。\n",
+                      (unsigned long)(REFRESH_INTERVAL_SEC / 60));
+    }
 
     hal.goSleep(REFRESH_INTERVAL_SEC); // 事件(按键)+定时(兜底)双通道,先到先唤醒
 }

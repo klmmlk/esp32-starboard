@@ -1,0 +1,383 @@
+// starboard_gui 实现 —— 见 include/starboard_gui.h
+//
+// 移植自 LiClock/src/GUI.cpp,三色屏全刷改造(见头文件注释 + docs/DEVELOPMENT.md 阶段2)。
+// 关键:无 push/pop_buffer(本项目 GxEPD2_3C 无 swapBuffer/copyBuffer/current_buffer_idx),
+//       弹窗【不恢复背景】,每次画面变化用 setFullWindow/firstPage/nextPage 全刷一帧。
+
+#include "starboard_gui.h"
+#include <Arduino.h>
+#include <starboard_display.h>   // display, u8g2, COL_*, CN_FONT_MAIN
+#include <starboard_hal.h>       // hal, btnl/btnc/btnr, pauseButtons
+#include <Fonts/FreeSans9pt7b.h> // msgbox_number/time 数字字体
+
+// 标题栏小字(标题栏 ~15px 高,配 wqy12)。CN_FONT_MAIN=wqy16 用于正文/菜单项。
+static const uint8_t *const FONT_TITLE = u8g2_font_wqy12_t_gb2312;
+
+// 按键引脚 → OneButton 实例(waitLongPress 用)。isPressing()=实时 digitalRead。
+static OneButton &btnOf(int pin)
+{
+    if (pin == PIN_BUTTONC) return hal.btnc;
+    if (pin == PIN_BUTTONR) return hal.btnr;
+    return hal.btnl;
+}
+
+namespace GUI
+{
+    bool waitLongPress(int btn)
+    {
+        // 进入时键已按下;600ms 内一直按住=长按,中途松开=短按
+        for (int16_t i = 0; i < 60; ++i)
+        {
+            if (!btnOf(btn).isPressing())
+                return false;
+            delay(10);
+        }
+        return true;
+    }
+
+    void autoIndentDraw(const char *str, int max_x, int start_x)
+    {
+        while (*str)
+        {
+            if (u8g2.getCursorX() >= max_x || *str == '\n')
+                u8g2.setCursor(start_x, u8g2.getCursorY() + 18); // 行高适配 wqy16
+            if (*str != '\n')
+                u8g2.print(*str);
+            ++str;
+        }
+    }
+
+    void drawWindowsWithTitle(const char *title, int16_t x, int16_t y, int16_t w, int16_t h)
+    {
+        display.fillRoundRect(x, y, w, h, 4, COL_BG);     // 填充背景(清空区域)
+        display.drawRoundRect(x, y, w, h, 4, COL_NORMAL); // 外框
+        display.drawFastHLine(x, y + 15, w, COL_NORMAL);  // 标题栏分隔线
+        if (title)
+        {
+            u8g2.setBackgroundColor(COL_BG);
+            u8g2.setForegroundColor(COL_NORMAL);
+            u8g2.setFont(FONT_TITLE);
+            int16_t tw = u8g2.getUTF8Width(title);
+            u8g2.setCursor(x + (w - tw) / 2, y + 12);
+            u8g2.print(title);
+        }
+    }
+
+    void msgbox(const char *title, const char *msg)
+    {
+        constexpr int16_t w = 280, h = 190;
+        const int16_t sx = (SCREEN_WIDTH - w) / 2;
+        const int16_t sy = (SCREEN_HEIGHT - h) / 2;
+        hal.pauseButtons = true;
+        display.setFullWindow();
+        display.firstPage();
+        do
+        {
+            drawWindowsWithTitle(title, sx, sy, w, h);
+            if (msg)
+            {
+                u8g2.setFont(CN_FONT_MAIN);
+                u8g2.setForegroundColor(COL_NORMAL);
+                u8g2.setCursor(sx + 10, sy + 42);
+                autoIndentDraw(msg, sx + w - 10, sx + 10);
+            }
+            u8g2.setFont(FONT_TITLE);
+            u8g2.setForegroundColor(COL_NORMAL);
+            int16_t bw = u8g2.getUTF8Width("确定");
+            display.drawRoundRect(sx + w / 2 - 45, sy + h - 34, 90, 24, 4, COL_NORMAL);
+            u8g2.setCursor(sx + w / 2 - bw / 2, sy + h - 16);
+            u8g2.print("确定");
+        } while (display.nextPage());
+
+        // 等任意键关闭 → 等全释放 → 恢复后台 tick
+        while (!(hal.btnl.isPressing() || hal.btnc.isPressing() || hal.btnr.isPressing()))
+            delay(10);
+        while (hal.btnl.isPressing() || hal.btnc.isPressing() || hal.btnr.isPressing())
+            delay(10);
+        hal.pauseButtons = false;
+    }
+
+    bool msgbox_yn(const char *title, const char *msg, const char *yes, const char *no)
+    {
+        constexpr int16_t w = 280, h = 190;
+        const int16_t sx = (SCREEN_WIDTH - w) / 2;
+        const int16_t sy = (SCREEN_HEIGHT - h) / 2;
+        if (!yes) yes = "确定(右)";
+        if (!no) no = "取消(左)";
+        bool result = false;
+        hal.pauseButtons = true;
+        display.setFullWindow();
+        display.firstPage();
+        do
+        {
+            drawWindowsWithTitle(title, sx, sy, w, h);
+            if (msg)
+            {
+                u8g2.setFont(CN_FONT_MAIN);
+                u8g2.setForegroundColor(COL_NORMAL);
+                u8g2.setCursor(sx + 10, sy + 42);
+                autoIndentDraw(msg, sx + w - 10, sx + 10);
+            }
+            u8g2.setFont(FONT_TITLE);
+            u8g2.setForegroundColor(COL_NORMAL);
+            int16_t bw;
+            display.drawRoundRect(sx + 20, sy + h - 34, 110, 24, 4, COL_NORMAL); // 左:取消
+            bw = u8g2.getUTF8Width(no);
+            u8g2.setCursor(sx + 20 + (110 - bw) / 2, sy + h - 16);
+            u8g2.print(no);
+            display.drawRoundRect(sx + w - 130, sy + h - 34, 110, 24, 4, COL_NORMAL); // 右:确定
+            bw = u8g2.getUTF8Width(yes);
+            u8g2.setCursor(sx + w - 130 + (110 - bw) / 2, sy + h - 16);
+            u8g2.print(yes);
+        } while (display.nextPage());
+
+        while (true)
+        {
+            if (hal.btnr.isPressing()) { result = true; break; }
+            if (hal.btnl.isPressing()) { result = false; break; }
+            delay(10);
+        }
+        while (hal.btnl.isPressing() || hal.btnc.isPressing() || hal.btnr.isPressing())
+            delay(10);
+        hal.pauseButtons = false;
+        return result;
+    }
+
+    int menu(const char *title, const menu_item options[], int16_t ico_w, int16_t ico_h)
+    {
+        constexpr int16_t w = 340, h = 270;
+        constexpr int16_t bar_w = 6;
+        constexpr int16_t n_items = 10;                     // 一屏项数
+        constexpr int16_t title_h = 16;                     // 标题栏高
+        constexpr int16_t item_h = (h - title_h) / n_items; // 每项高
+        const int16_t sx = (SCREEN_WIDTH - w) / 2;
+        const int16_t sy = (SCREEN_HEIGHT - h) / 2;
+        const int16_t item_w = w - 10 - bar_w;
+
+        int total = 0;
+        bool hasIcon = false;
+        while (options[total].title != nullptr)
+        {
+            if (options[total].icon != nullptr) hasIcon = true;
+            ++total;
+        }
+        if (total == 0) return -1;
+        const int16_t track_h = h - title_h;
+        const int16_t bar_h = (int16_t)((int)n_items * track_h / total);
+
+        int pageStart = 0, selected = 0, barPos = 0;
+        bool updated = true, waitc = false;
+        hal.pauseButtons = true;
+        while (true)
+        {
+            if (hal.btnl.isPressing())
+            {
+                delay(20);
+                if (hal.btnl.isPressing())
+                {
+                    if (selected == 0) selected = total;
+                    --selected;
+                    updated = true;
+                }
+            }
+            if (hal.btnr.isPressing())
+            {
+                delay(20);
+                if (hal.btnr.isPressing())
+                {
+                    ++selected;
+                    if (selected == total) selected = 0;
+                    updated = true;
+                }
+            }
+            if (hal.btnc.isPressing())
+            {
+                delay(20);
+                if (hal.btnc.isPressing())
+                {
+                    if (waitLongPress(PIN_BUTTONC)) { selected = 0; waitc = true; updated = true; }
+                    else break; // 短按中键=确认
+                }
+            }
+
+            if (updated)
+            {
+                updated = false;
+                if (selected < pageStart) pageStart = selected;
+                else if (selected >= pageStart + n_items) pageStart = selected - n_items + 1;
+
+                display.setFullWindow();
+                display.firstPage();
+                do
+                {
+                    drawWindowsWithTitle(title, sx, sy, w, h);
+                    int max_items = min((int)n_items, total);
+                    for (int i = 0; i < max_items; ++i)
+                    {
+                        int16_t iy = sy + title_h + item_h * i;
+                        if (options[i + pageStart].icon != nullptr && ico_h <= item_h - 2)
+                            display.drawXBitmap(sx + 5, iy + (item_h - ico_h) / 2,
+                                                options[i + pageStart].icon, ico_w, ico_h, COL_NORMAL);
+                        u8g2.setFont(CN_FONT_MAIN);
+                        u8g2.setForegroundColor(COL_NORMAL);
+                        u8g2.drawUTF8(sx + 5 + (hasIcon ? ico_w + 2 : 0),
+                                      iy + item_h - 4, options[i + pageStart].title);
+                        if (selected == i + pageStart)
+                            display.drawRoundRect(sx + 3, iy, item_w, item_h - 2, 3, COL_NORMAL);
+                    }
+                    if (total > n_items)
+                    {
+                        barPos = selected * (track_h - bar_h) / total;
+                        display.fillRoundRect(sx + w - bar_w - 2, sy + title_h + barPos,
+                                              bar_w, bar_h, 2, COL_NORMAL);
+                    }
+                } while (display.nextPage());
+            }
+
+            if (waitc)
+            {
+                waitc = false;
+                while (hal.btnc.isPressing()) delay(10);
+                delay(10);
+            }
+            delay(10);
+        }
+        while (hal.btnc.isPressing()) delay(10);
+        hal.pauseButtons = false;
+        return selected;
+    }
+
+    int msgbox_number(const char *title, uint16_t digits, int pre_value)
+    {
+        constexpr int16_t w = 220, h = 120;
+        const int16_t sx = (SCREEN_WIDTH - w) / 2;
+        const int16_t sy = (SCREEN_HEIGHT - h) / 2;
+        const int16_t ix = sx + 12, iy = sy + 38;
+        const int16_t iw = w - 24, ih = h - 38 - 18;
+        if (digits == 0) return 0;
+        --digits;
+        if (digits > 8) digits = 8;
+
+        hal.pauseButtons = true;
+        int cur = pre_value;
+        int cd = (int)digits; // 当前位(0=个位)
+        int pow = 1;
+        for (int i = 0; i < cd; ++i) pow *= 10;
+        bool changed = true;
+        while (true)
+        {
+            if (hal.btnl.isPressing())
+            {
+                if (waitLongPress(PIN_BUTTONL)) cd = (cd == (int)digits) ? 0 : cd + 1; // 长按=移位
+                else cur -= pow;                                                       // 短按=减
+                changed = true;
+            }
+            else if (hal.btnr.isPressing())
+            {
+                if (waitLongPress(PIN_BUTTONR)) cd = (cd == 0) ? (int)digits : cd - 1;
+                else cur += pow;
+                changed = true;
+            }
+            else if (hal.btnc.isPressing())
+            {
+                if (waitLongPress(PIN_BUTTONC)) { cur = pre_value; changed = true; } // 长按=复位
+                else break;                                                           // 短按=确认
+            }
+            if (changed)
+            {
+                pow = 1;
+                for (int i = 0; i < cd; ++i) pow *= 10;
+                changed = false;
+                display.setFullWindow();
+                display.firstPage();
+                do
+                {
+                    drawWindowsWithTitle(title, sx, sy, w, h);
+                    display.drawRoundRect(ix, iy, iw, ih, 3, COL_NORMAL);
+                    display.setFont(&FreeSans9pt7b);
+                    display.setTextColor(COL_NORMAL);
+                    display.setCursor(ix + 8, iy + (ih - 9) / 2 + 12);
+                    int n = cur;
+                    if (n < 0) { display.print('-'); n = -n; }
+                    uint8_t d[9];
+                    for (int i = 0; i <= (int)digits; ++i) { d[i] = n % 10; n /= 10; }
+                    for (int i = (int)digits; i >= 0; --i)
+                    {
+                        if (i == cd)
+                            display.drawFastHLine(display.getCursorX(), display.getCursorY() + 2, 10, COL_NORMAL);
+                        display.print(d[i], DEC);
+                    }
+                } while (display.nextPage());
+            }
+            delay(10);
+        }
+        while (hal.btnc.isPressing()) delay(10);
+        hal.pauseButtons = false;
+        return cur;
+    }
+
+    int msgbox_time(const char *title, int pre_value)
+    {
+        constexpr int16_t w = 220, h = 120;
+        const int16_t sx = (SCREEN_WIDTH - w) / 2;
+        const int16_t sy = (SCREEN_HEIGHT - h) / 2;
+        const int16_t ix = sx + 12, iy = sy + 38;
+        const int16_t iw = w - 24, ih = h - 38 - 18;
+        const int add[4] = {1, 10, 60, 600}; // 个/十分、个/十时 的分钟步进
+
+        hal.pauseButtons = true;
+        uint8_t cd = 3;
+        int cv = pre_value;
+        bool changed = true;
+        while (true)
+        {
+            if (hal.btnl.isPressing())
+            {
+                if (waitLongPress(PIN_BUTTONL)) cd = (cd == 3) ? 0 : cd + 1;
+                else { cv -= add[cd]; if (cv < 0) cv = 0; }
+                changed = true;
+            }
+            else if (hal.btnr.isPressing())
+            {
+                if (waitLongPress(PIN_BUTTONR)) cd = (cd == 0) ? 3 : cd - 1;
+                else { cv += add[cd]; if (cv >= 24 * 60) cv = 24 * 60 - 1; }
+                changed = true;
+            }
+            else if (hal.btnc.isPressing())
+            {
+                if (waitLongPress(PIN_BUTTONC)) { cv = pre_value; changed = true; }
+                else break;
+            }
+            if (changed)
+            {
+                uint8_t tb[4];
+                tb[3] = (cv / 60) / 10;
+                tb[2] = (cv / 60) % 10;
+                tb[1] = (cv % 60) / 10;
+                tb[0] = (cv % 60) % 10;
+                changed = false;
+                display.setFullWindow();
+                display.firstPage();
+                do
+                {
+                    drawWindowsWithTitle(title, sx, sy, w, h);
+                    display.drawRoundRect(ix, iy, iw, ih, 3, COL_NORMAL);
+                    display.setFont(&FreeSans9pt7b);
+                    display.setTextColor(COL_NORMAL);
+                    display.setCursor(ix + 8, iy + (ih - 9) / 2 + 12);
+                    for (int i = 3; i >= 0; --i)
+                    {
+                        if (i == (int)cd)
+                            display.drawFastHLine(display.getCursorX(), display.getCursorY() + 2, 10, COL_NORMAL);
+                        display.print(tb[i], DEC);
+                        if (i == 2) display.print(':'); // HH:MM 冒号
+                    }
+                } while (display.nextPage());
+            }
+            delay(10);
+        }
+        while (hal.btnc.isPressing()) delay(10);
+        hal.pauseButtons = false;
+        return cv;
+    }
+} // namespace GUI
