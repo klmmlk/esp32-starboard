@@ -12,9 +12,15 @@
 #include <esp_smartconfig.h> // esp_smartconfig_*(SmartConfig 配网,esp_wifi 组件)
 #include <esp_netif.h>       // esp_netif_create_default_wifi_sta
 #include <esp_netif_sntp.h>  // esp_netif_sntp_*(NTP,esp_netif 组件)
+#include <starboard_display.h> // display.hibernate(深睡前关屏幕驱动电源)
 
 // 深睡唤醒计数(存 RTC 慢速内存,跨深睡保留)。M5 验证 RTC 内存保留用。
 RTC_DATA_ATTR uint32_t bootCount = 0;
+
+// WiFi 重连退避:连不上时按失败次数递增间隔重连,避免疯狂重连刷屏/耗电。
+// (esp_wifi 内部已有一定重试,这里在断开事件上再加一层节流。)
+static constexpr uint8_t WIFI_RECONNECT_MAX_FAIL = 6; // 达此失败数后停重连(等下次唤醒重试)
+static uint8_t wifiReconnectFail = 0;                 // 当前连续失败次数
 
 // -----------------------------------------------------------------------------
 // 按键事件回调(M1 验证用:串口打印)。后续里程碑会被 App 框架接管。
@@ -22,7 +28,7 @@ RTC_DATA_ATTR uint32_t bootCount = 0;
 static void onBtnLClick() { Serial.println("[HAL] 左键 短按"); }
 static void onBtnCClick() { Serial.println("[HAL] 中键 短按"); }
 static void onBtnRClick() { Serial.println("[HAL] 右键 短按"); }
-static void onBtnLLongPress() { Serial.println("[HAL] 左键 长按 → 请求深睡"); hal.wantSleep = true; }
+static void onBtnLLongPress() { Serial.println("[HAL] 左键 长按"); }
 static void onBtnCLongPress() { Serial.println("[HAL] 中键 长按"); }
 static void onBtnRLongPress() { Serial.println("[HAL] 右键 长按"); }
 
@@ -31,12 +37,11 @@ static void task_hal_update(void *)
 {
     while (true)
     {
-        hal.tickButtons();
-        // 在 tick() 返回后的干净栈上执行深睡,不在 OneButton 回调栈里跑 esp_sleep(防重入/深栈)
-        if (hal.wantSleep)
+        if (!hal.pauseButtons) // GUI/appManager 阻塞交互期间暂停 tick(防按键回调打断)
         {
-            hal.wantSleep = false;
-            hal.goSleep(hal.sleepSec);
+            hal.tickButtons();
+            // 深睡已改由 appManager.deepSleep() 在 run() 末尾的干净栈上调用(回合制),
+            // 不再用按键回调置 wantSleep 标志的方式。
         }
         vTaskDelay(pdMS_TO_TICKS(20)); // 20ms 轮询,足够检测人手速度
     }
@@ -72,6 +77,15 @@ void HAL::init()
     setenv("TZ", TIMEZONE, 1);
     tzset();
 
+    // NVS(pref 配置 + esp_wifi 凭据都需要)。阶段3 起 WiFi 按需联,但 NVS 在 init 就绪。
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
+        nvs_flash_erase();
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(err);
+
     // NVS 配置存储
     pref.begin("starboard", false);
     Serial.println("[HAL] Preferences 已打开(namespace=starboard)");
@@ -88,9 +102,9 @@ void HAL::init()
     xTaskCreate(task_hal_update, "hal_update", 8192, nullptr, 5, nullptr);
     Serial.println("[HAL] 按键轮询任务已启动");
 
-    // WiFi + NTP(M3/M4):建栈。已配网(esp_wifi NVS 有凭据)则自动连接,否则 SmartConfig 配网
-    wifiInit();
-    Serial.println("[HAL] init 完成。");
+    // WiFi/NTP 不在 init 联网(阶段3 起【按需】:OOBE 配网 / 天气 App 才调 hal.wifiInit)。
+    // 主时钟靠深睡期间 RTC 维持走时;首次上电未对时显示 --:--,由 OOBE 配网 + NTP 校准。
+    Serial.println("[HAL] init 完成(WiFi 按需,未联网)。");
 }
 
 void HAL::update()
@@ -134,7 +148,9 @@ void HAL::checkWakeupCause()
 void HAL::goSleep(uint32_t sec)
 {
     Serial.println("[HAL] 准备进入深睡...");
+    display.hibernate(); // 屏幕驱动进入低功耗(关 DC-DC),E-ink 双稳态内容保留
     waitForAllReleased(); // 等三键都松开,防唤醒瞬间键还按着又被 OneButton 当事件
+    // hibernate 后屏幕不耗电;深睡后 ESP32 也断电,全机微安级待机
     // (M3 起:WiFi 已连则在此 esp_wifi_stop())
 
     // 三个唤醒引脚开 RTC IO 内部上拉(active-low: 空闲靠上拉维持高,按下变低 → ANY_LOW 唤醒)。
@@ -162,6 +178,12 @@ void HAL::goSleep(uint32_t sec)
 // 配网:SC_TYPE_ESPTOUCH_AIRKISS —— 微信「乐鑫 AirKiss」小程序或 ESPTouch APP。
 // 凭据存 esp_wifi 默认 NVS(esp_wifi_get_config 判断已配网)。
 // -----------------------------------------------------------------------------
+
+// STA_START 事件里是否允许自动启动 SmartConfig。
+// wifiInit(首次/开机配网)走 STA_START 自动分支;wifiReprov 自己显式启 SmartConfig,
+// 要抑制自动分支(否则会启两个 SmartConfig,第二个返回 -1 ESP_ERR_WIFI_CONN)。
+static bool allowAutoSmartconfig = true;
+
 static void ntpSyncCb(struct timeval *tv)
 {
     hal.timeSynced = true;
@@ -188,7 +210,7 @@ static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
                 hal.wifiState = HAL::WifiState::Connecting;
                 esp_wifi_connect();
             }
-            else
+            else if (allowAutoSmartconfig)
             {
                 Serial.println("[HAL] 未配网,启动 SmartConfig(ESPTouch_AirKiss)");
                 Serial.println("[HAL] 用微信「乐鑫 AirKiss」小程序 或 ESPTouch APP 配网(仅 2.4G WiFi)");
@@ -200,10 +222,27 @@ static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
             break;
         }
         case WIFI_EVENT_STA_DISCONNECTED:
+        {
             hal.wifiState = HAL::WifiState::Idle;
-            Serial.println("[HAL] WiFi 断开,重连...");
-            esp_wifi_connect();
+            // 退避重连:失败次数递增到上限就停,不再疯狂 esp_wifi_connect 刷屏。
+            // reason 见 WIFI_REASON_*;密码错/找不到 AP 会持续失败,退避后等下次唤醒再试。
+            if (wifiReconnectFail < WIFI_RECONNECT_MAX_FAIL)
+            {
+                wifiReconnectFail++;
+                uint32_t backoff = 500UL * wifiReconnectFail; // 0.5s,1s,1.5s...线性退避
+                Serial.printf("[HAL] WiFi 断开,退避 %lums 后重连(第 %u 次)...\n",
+                              (unsigned long)backoff, wifiReconnectFail);
+                vTaskDelay(pdMS_TO_TICKS(backoff));
+                esp_wifi_connect();
+            }
+            else if (wifiReconnectFail == WIFI_RECONNECT_MAX_FAIL)
+            {
+                wifiReconnectFail++; // 防重复打印(只在到上限时打一次)
+                Serial.println("[HAL] WiFi 重连已达上限,停止重连(等下次唤醒重试)。");
+                hal.wifiState = HAL::WifiState::Failed;
+            }
             break;
+        }
         default:
             break;
         }
@@ -235,6 +274,7 @@ static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
     else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP)
     {
         hal.wifiState = HAL::WifiState::Connected;
+        wifiReconnectFail = 0; // 连上,清零失败计数
         wifi_config_t cur = {};
         esp_wifi_get_config(WIFI_IF_STA, &cur);
         hal.wifiSsid = (const char *)cur.sta.ssid;
@@ -243,18 +283,23 @@ static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
     }
 }
 
-void HAL::wifiInit()
+// STA_START 自动 SmartConfig 开关 allowAutoSmartconfig 定义见上方(wifiEventHandler 前)。
+
+// 内部:确保 WiFi 驱动已初始化(NVS/netif/event/handler/wifi_init/start 幂等)。
+// 重新配网入口来自不联网的主时钟时,WiFi 可能从未初始化,必须先调这个。
+static bool wifiDrvInited = false;
+static void wifiEnsureInit()
 {
-    // NVS:SmartConfig 凭据存 esp_wifi 默认 NVS;容忍分区版本变化
+    if (wifiDrvInited)
+        return;
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND)
     {
-        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_flash_erase();
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
-    // netif + 默认事件循环(arduino-esp32 组件可能已建,重复调返回 INVALID_STATE,忽略)
-    esp_netif_init();
+    esp_netif_init();                     // 已建返回 INVALID_STATE,忽略
     esp_event_loop_create_default();
     esp_netif_create_default_wifi_sta();
 
@@ -263,15 +308,106 @@ void HAL::wifiInit()
     esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, wifiEventHandler, nullptr);
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_wifi_init(&cfg);
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    wifiDrvInited = true;
+    Serial.println("[HAL] WiFi 驱动已初始化");
+}
+
+void HAL::wifiInit(uint32_t timeoutSec)
+{
+    wifiEnsureInit(); // NVS/netif/event/wifi_init/start(幂等)
+
+    // 【阻塞等连接结果,超时即放弃】避免"连不上旧 WiFi → 无限挂死 app"。
+    // 连上(Connected)/配网中(Provisioning)即返回;超时设 Failed 让 app 用本地 RTC 时间继续。
+    Serial.printf("[HAL] 等待 WiFi 连接(超时 %lus)...\n", (unsigned long)timeoutSec);
+    uint32_t waited = 0;
+    const uint32_t stepMs = 200;
+    while (wifiState != WifiState::Connected && wifiState != WifiState::Provisioning
+           && waited < timeoutSec * 1000)
+    {
+        delay(stepMs);
+        waited += stepMs;
+    }
+    if (wifiState != WifiState::Connected && wifiState != WifiState::Provisioning)
+    {
+        wifiState = WifiState::Failed;
+        Serial.println("[HAL] WiFi 连接超时,放弃(继续用本地 RTC 时间显示)。");
+        // 停掉反复重连刷屏:让退避计数停在最大,不再立刻 esp_wifi_connect。
+        wifiReconnectFail = WIFI_RECONNECT_MAX_FAIL;
+    }
+}
+
+void HAL::wifiReprov(uint32_t timeoutSec)
+{
+    Serial.println("[HAL] 重新配网:清旧配置 + 重启WiFi → STA_START 自动启 SmartConfig");
+
+    // 临时关闭 STA_START 自动 SC 分支:否则下面 wifiEnsureInit 的 esp_wifi_start() 会
+    // 先启一个 SC,随后我们 stop+start 再启第二个,两个 SC 冲突报 "smartconfig busy"。
+    allowAutoSmartconfig = false;
+
+    // 重新配网入口来自不联网的主时钟,WiFi 驱动可能从未初始化。先确保就绪(此轮 start 不启 SC)。
+    wifiEnsureInit();
+
+    // 停旧 SmartConfig(若历史启过)+ 断开旧连接
+    esp_smartconfig_stop();
+    esp_wifi_disconnect();
+    delay(100);
+
+    // 清当前配置(写空)+ 擦 NVS 凭据 → 重启后 STA_START 检测配置空 → 自动启 SmartConfig
+    wifi_config_t empty = {};
+    esp_wifi_set_config(WIFI_IF_STA, &empty);
+    esp_wifi_restore();
+    delay(50);
+
+    // 现在开启自动 SC 分支:下面重启 WiFi 的 STA_START 会走它(唯一的 SC)。
+    allowAutoSmartconfig = true;
+    wifiState = WifiState::Provisioning;
+    wifiReconnectFail = 0;
+
+    // 重启 WiFi(stop→start)触发新的 WIFI_EVENT_STA_START → 自动 SmartConfig 分支(唯一一次)。
+    Serial.println("[HAL] 重启 WiFi,等待 STA_START 自动启动 SmartConfig...");
+    Serial.println("[HAL] 用微信「乐鑫 AirKiss」小程序或 ESPTouch APP 配网(仅 2.4G WiFi)");
+    esp_wifi_stop();
+    delay(100);
+    // ⚠️ esp_wifi_restore() 会把 WiFi 模式重置成默认(softAP)!SmartConfig 的 sniffer
+    //    必须在 STA 模式才能工作(errno 12293 sc_sniffer.c)。start 前务必重设回 STA。
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_start();
+
+    // 阻塞等连接结果
+    uint32_t waited = 0;
+    while (waited < timeoutSec * 1000 && wifiState != WifiState::Connected)
+    {
+        delay(200);
+        waited += 200;
+        if (wifiState == WifiState::Failed) break;
+    }
+    if (wifiState == WifiState::Connected)
+    {
+        Serial.println("[HAL] 重新配网成功,停止 SmartConfig");
+        esp_smartconfig_stop();
+        wifi_config_t cur = {};
+        esp_wifi_get_config(WIFI_IF_STA, &cur);
+        wifiSsid = (const char *)cur.sta.ssid;
+        Serial.printf("[HAL] SSID=%s\n", wifiSsid.c_str());
+    }
+    else
+    {
+        wifiState = WifiState::Failed;
+        Serial.println("[HAL] 重新配网超时/失败");
+    }
 }
 
 void HAL::ntpStart()
 {
     // 注:要多 NTP 源需在 sdkconfig 设 CONFIG_LWIP_SNTP_MAX_SERVERS>=2(默认仅 1,servers[] 数组大小)。
     //     阿里云 NTP 国内稳定,单源 + SNTP 周期重试够用;后续要冗余再调大该 Kconfig。
+    static bool ntpInited = false;
+    if (ntpInited)
+        return; // 防重复:OOBE 已对时过,重新配网后再调会报 "esp_netif_sntp already initialized"
+    ntpInited = true;
     esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("ntp.aliyun.com");
     cfg.sync_cb = ntpSyncCb;
     esp_netif_sntp_init(&cfg);

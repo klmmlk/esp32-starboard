@@ -3,6 +3,7 @@ managed_components/
 
 # 参考项目 LiClock(第三方 GPL,不纳入本仓库)
 LiClock/
+e-Paper_FastFreshBWOnColor/
 
 # IDE/构建生成的备份配置
 sdkconfig.old
