@@ -204,21 +204,23 @@ esp32-starboard/
 
 ---
 
-### 阶段 4：Web 配网 + OTA  ⬜
+### 阶段 4：OTA 空中升级  ✅
 
-**目标**：Web 配置页与空中升级。参考 LiClock `src/webserver/`，OTA 为新增。
+**目标**：HTTP OTA 空中升级。配网仍走 SmartConfig（微信 AirKiss），不引入 Web 配网页面。
 
-**参考**：`LiClock/src/webserver/`（webserver.cpp + index.h/jss.h 等内嵌前端）。
+**参考**：IDF `examples/system/ota/simple_ota_example`。
+
+**设计**：IDF 原生 `esp_http_client`（HTTP GET 下载）+ `esp_ota_begin/write/end` 写入非当前 OTA 分区→ `esp_ota_set_boot_partition` → `esp_restart()`。URL 编译期写死在 `appOTA.cpp` 的 `OTA_URL` 宏。进度每 10% 全刷一次屏幕。从设置菜单进入，不在 App 列表显示。
 
 **Checklist**：
-- [ ] ESPAsyncWebServer：优先 Component Registry（`espressif/esp-async-webserver` + `async_tcp`）
-- [ ] 路由：`/`（配置页）、`/setwifi`、`/settime`、`/upload`（上传到 LittleFS）、`/ota`（固件更新）
-- [ ] 前端：沿用内嵌 `.h` 字符串常量法，按本项目设置项精简重写；Blockly 暂不搬
-- [ ] OTA（新增）：`POST /ota` → Arduino `Update` 库写入 ota_0/ota_1 → `ESP.restart()`，配双 OTA 分区
-- [ ] 配网二维码 QRCode 生成，坐标适配三色屏
-- [ ] 验证：AP 模式手机连接，网页改 WiFi + 上传固件重启生效
+- [x] 确认分区表已有 ota_0 / ota_1 双分区
+- [x] 新建 `main/apps/appOTA.cpp`：HTTP OTA 下载 + 烧录 + 重启
+- [x] 设置 → OTA 升级 入口（`appSettings.cpp`）
+- [x] `main/CMakeLists.txt` 加 `REQUIRES esp_http_client app_update`
+- [x] ✅ **编译通过并烧录验证**（首次 OTA 成功）
+- [ ] ⏳ **生成新固件后做最终测试**（从电脑 HTTP 服务器推送，设备下载重启，验证新固件正常运行）
 
-**风险**：ESPAsyncWebServer 来源（Registry vs 源码）；OTA 分区切换。
+**风险**：当前已验证 OTA 流程跑通。最终验证需等下一次变更后：电脑起 HTTP 服务提供新 `.bin` → 设备 OTA 下载 → 重启确认新版本运行正常。
 
 ---
 
@@ -287,7 +289,8 @@ esp32-starboard/
 - 2026-06-25 —— **阶段3 启动 + 调研**(经 3 个 Explore agent)。核心结论:LiClock 的常驻 `task_appManager` 死循环 + lightsleep/deepsleep 模型与本项目的【纯事件驱动+深睡】不兼容,改造为**回合制**:一次唤醒 = `app_main` 重跑 = `appManager.run()` 一回合(恢复App→系统手势→setup链→记名→深睡),App setup() 返回即回合结束。可直搬:AppBase 字段、`appList`+`findByName`、`RTC_DATA_ATTR lastAppName`+recover、appStack 栈式语义;LiClock GOTOAPP/GOBACK 两段重复切换合并成 `switchToApp()`。关键决策(经用户确认):**长按中键→App列表**(复用现有 `GUI::waitLongPress`+`GUI::menu`,零改动 starboard_gui)、**纯 NVS 持久化**(不引入 LittleFS)、内置 App=Clock+Settings+OOBE+Selector。已发现的现有组件缺口:① `hal.init` 每次唤醒强制 `wifiInit` 阻塞几秒→拆成按需(OOBE/天气 App 才调);② HAL 按键回调的 wantSleep 回合制不需要;③ 按键事件队列锁在 gui 匿名 namespace——但系统手势靠"唤醒键身份路由+GUI阻塞函数"绕开,无需独立分发层。
 - 2026-06-25 —— **阶段3 M1-M5 代码完成**(待烧录验证)。新建 `components/starboard_app/`(AppBase 精简版 + 回合制 AppManager:`registerApp`/`begin`/`run`/`gotoApp`/`goBack`/`openSelector`/`switchToApp`/`deepSleep`)。`main/apps/` 三个内置 App:appClock(搬 refreshMainFrame,仅本地RTC时间)、appSettings(GUI::menu 屏幕方向/NTP间隔/关于/返回,全 NVS)、appOOBE(欢迎→SmartConfig配网→NTP→gotoApp clock,resumable=false/showInList=false,配网失败进离线不卡死);appSelector 不独立成 App、是 `AppManager::openSelector`(GUI::menu 列 showInList)。main.cpp 改 `app_main`→registerBuiltinApps→begin→run。hal 改动:① `init` 去掉 `wifiInit`+把 `nvs_flash_init` 提到 init(pref.begin 前要 NVS 就绪);② 清按键回调 wantSleep + 删 wantSleep/sleepSec 字段 + task_hal_update 去 wantSleep 分支。交互闭环:中键唤醒→waitLongPress 判长短→长按 openSelector/短按跑当前App;setup 内 gotoApp/goBack 设 pendingSwitch/pendingBack,run 的 do-while 链式消费。⚠️ 待烧录验证(本环境无 idf.py);后置项:屏幕方向设置被 display_init 每次重置、NTP间隔无定时消费方、appWebServer 留阶段4。
 - 2026-06-25 —— **阶段3 烧录验证 + 长按检测修正**(已烧录)。烧录发现长按中键进不去 App 列表——`GUI::waitLongPress` 依赖 `pollKeys` 上升沿(edge: 未按→按下),但唤醒时键已按着,pollKeys 首次执行产生「伪上升沿」被 `if(polled&&btnIsPress)` 吞掉 → 永远进不了 600ms 长按计时 → 空循环直到松手 → 误判短按。改用 `digitalRead`+持续计时(从唤醒时刻起算,不依赖上升沿)修复。
-- 2026-06-25 —— **阶段3 功能扩展:重新配网 + 屏幕休眠 + 无操作超时**(已烧录验证)。① settings 加「重新配网」:新建 `hal.wifiReprov()`——清旧配置+重启 WiFi,复用开机配网同一路径(`esp_wifi_start`→STA_START→配置空→自动 SmartConfig)。② 屏幕休眠:`run()` setup 后进【保持期】,前 10s 正常显示,满 10s `display.hibernate()`(屏驱动关电源、E-ink 内容保留显示),hal CMakeLists 加 REQUIRES starboard_display。③ 无操作超时:保持期 N 秒(`hal.pref("sleep_to")` 默认 60s 最小 10s,settings 可调)后 `deepSleep`;保持期按键重画/中键长按进列表。⚠️ **重新配网连环坑**(烧录逐一定位):① `esp_wifi_*` 在驱动未 init 时调用(`ESP_ERR_WIFI_NOT_INIT`)→ 抽 `wifiEnsureInit()` 幂等初始化;② 空配置 `DISCONNECTED` handler 循环重连抢 WiFi 时间 → 配网前禁 auto-reconnect;③ 启动两个 SmartConfig(`smartconfig busy`)→ 全局开关 `allowAutoSmartconfig` 抑制 STA_START 自动分支的重复启动;④ `esp_wifi_restore()` 把模式重置成 **softAP**(SmartConfig sniffer 必须 STA 模式,AP 下报 `errno 12293 sc_sniffer`)→ start 前 `esp_wifi_set_mode(WIFI_MODE_STA)`;⑤ `esp_smartconfig_start` 在 WiFi 已运行但状态不对时返回 `-1 ESP_ERR_WIFI_CONN` → 不显式启,改走 STA_START 自动分支。最终验证:重新配网→微信 AirKiss→收到 `tongchuang1`→连接→拿 IP 192.168.10.24→NTP 对时北京时间 17:22:15,全链路通。⚠️ **全刷 watchdog panic**:GxEPD2 `_waitWhileBusy` 用 `__yield` 忙等只让给同优先级任务,IDLE0(优先级0) 拿不到 CPU 喂狗 → 全刷 5s 触发 Task Watchdog panic(backtrace 定位)。修法:`guiBusyCallback` 里 `pollKeys()` 后加 `vTaskDelay(pdMS_TO_TICKS(1))` 让 IDLE 跑。教训:墨水屏长 busy-wait 会饿死 IDLE watchdog,需在 busy callback 里主动 yield 喂狗。`ntpStart()` 加 `ntpInited` 防重复(消除 `esp_netif_sntp already initialized` 警告)。
+- 2026-06-25 —— **阶段3 功能扩展:重新配网 + 屏幕休眠 + 无操作超时**(已烧录验证)。
+- 2026-06-25 —— **阶段4 OTA 完成**。使用 IDF 原生 `esp_http_client` + `esp_ota_begin/write/end` 实现 HTTP OTA：编译期写死 URL（`http://10.10.10.100:8070/ota_test.bin`），设置菜单「OTA 升级」入口，`appOTA` 仅从设置进（`showInList=false`）。首次烧录验证 OTA 流程跑通。⚠️ 待下一次变更后做完整测试：电脑 HTTP 服务器推新版固件 → 设备 OTA 下载 → 重启确认新版本运行正确。① settings 加「重新配网」:新建 `hal.wifiReprov()`——清旧配置+重启 WiFi,复用开机配网同一路径(`esp_wifi_start`→STA_START→配置空→自动 SmartConfig)。② 屏幕休眠:`run()` setup 后进【保持期】,前 10s 正常显示,满 10s `display.hibernate()`(屏驱动关电源、E-ink 内容保留显示),hal CMakeLists 加 REQUIRES starboard_display。③ 无操作超时:保持期 N 秒(`hal.pref("sleep_to")` 默认 60s 最小 10s,settings 可调)后 `deepSleep`;保持期按键重画/中键长按进列表。⚠️ **重新配网连环坑**(烧录逐一定位):① `esp_wifi_*` 在驱动未 init 时调用(`ESP_ERR_WIFI_NOT_INIT`)→ 抽 `wifiEnsureInit()` 幂等初始化;② 空配置 `DISCONNECTED` handler 循环重连抢 WiFi 时间 → 配网前禁 auto-reconnect;③ 启动两个 SmartConfig(`smartconfig busy`)→ 全局开关 `allowAutoSmartconfig` 抑制 STA_START 自动分支的重复启动;④ `esp_wifi_restore()` 把模式重置成 **softAP**(SmartConfig sniffer 必须 STA 模式,AP 下报 `errno 12293 sc_sniffer`)→ start 前 `esp_wifi_set_mode(WIFI_MODE_STA)`;⑤ `esp_smartconfig_start` 在 WiFi 已运行但状态不对时返回 `-1 ESP_ERR_WIFI_CONN` → 不显式启,改走 STA_START 自动分支。最终验证:重新配网→微信 AirKiss→收到 `tongchuang1`→连接→拿 IP 192.168.10.24→NTP 对时北京时间 17:22:15,全链路通。⚠️ **全刷 watchdog panic**:GxEPD2 `_waitWhileBusy` 用 `__yield` 忙等只让给同优先级任务,IDLE0(优先级0) 拿不到 CPU 喂狗 → 全刷 5s 触发 Task Watchdog panic(backtrace 定位)。修法:`guiBusyCallback` 里 `pollKeys()` 后加 `vTaskDelay(pdMS_TO_TICKS(1))` 让 IDLE 跑。教训:墨水屏长 busy-wait 会饿死 IDLE watchdog,需在 busy callback 里主动 yield 喂狗。`ntpStart()` 加 `ntpInited` 防重复(消除 `esp_netif_sntp already initialized` 警告)。
 
 ---
 

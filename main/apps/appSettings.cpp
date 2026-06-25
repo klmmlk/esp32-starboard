@@ -39,6 +39,7 @@ public:
                 {nullptr, "NTP 间隔(存配置)"},
                 {nullptr, "重新配网"},
                 {nullptr, "无操作超时"},
+                {nullptr, "OTA 升级"},
                 {nullptr, "关于"},
                 {nullptr, "返回"},
                 {nullptr, nullptr},
@@ -50,7 +51,8 @@ public:
             case 1: editNtpInterval(); break;
             case 2: wifiReprov(); break;
             case 3: editSleepTimeout(); break;
-            case 4: aboutBox(); break;
+            case 4: return otaUpgrade();  // gotoApp 设 pendingSwitch,return 让 run() 消费
+            case 5: aboutBox(); break;
             default: appManager.goBack(); return; // "返回" 或异常索引 → 回上层
             }
         }
@@ -119,9 +121,16 @@ private:
         }
     }
 
+    void otaUpgrade()
+    {
+        appManager.gotoApp("ota");
+        // gotoApp 只设了 pendingSwitch,需要 return 让 run() 消费
+        // (否则菜单循环继续,App 切不过去)
+    }
+
     void aboutBox()
     {
-        GUI::msgbox("关于", "esp32-starboard\nESP32-S3 三色墨水屏\n阶段3 AppManager");
+        GUI::msgbox("关于", "esp32-starboard\nESP32-S3 三色墨水屏\n阶段3 AppManager + OTA");
     }
 };
 AppSettings appSettingsInst;
