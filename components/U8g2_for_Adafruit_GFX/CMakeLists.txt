@@ -2,7 +2,7 @@
 # 源码: https://github.com/olikraus/U8g2_for_Adafruit_GFX
 # 操作: 把 LiClock/lib/U8g2_for_Adafruit_GFX/src/ 的 4 个文件拷到本目录
 # 注意: u8g2_fonts 是 .c 文件,要和 .cpp 一起收录
-file(GLOB U8G2_SRCS "*.cpp" "*.c")
+file(GLOB U8G2_SRCS "simhei16.c" "*.cpp" "*.c")
 idf_component_register(
     SRCS ${U8G2_SRCS}
     INCLUDE_DIRS "."

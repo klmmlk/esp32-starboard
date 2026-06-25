@@ -10,5 +10,6 @@ void registerBuiltinApps()
     appManager.registerApp(appSettings);
     appManager.registerApp(appOOBE); // showInList=false,不进列表,但需注册供 begin() findByName
     appManager.registerApp(appOTA);
+    appManager.registerApp(appLuaTest);
     appManager.setHome(appClock);    // 默认 home = 主时钟(begin 据 oobe 进度可能改写为 OOBE)
 }
