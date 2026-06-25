@@ -15,6 +15,7 @@
 #include <starboard_gui.h>
 #include <starboard_app.h>
 #include "apps/apps.h"
+#include <lua_app_wrapper.h>
 
 extern "C" void app_main()
 {
@@ -24,6 +25,7 @@ extern "C" void app_main()
     GUI::initInput();    // busy callback 防丢键:全刷期间按键进缓冲,GUI/App 消费;且周期喂狗(见实现)
 
     registerBuiltinApps(); // 注册内置 App + 设 home
+    scanAndRegisterLuaApps(); // 扫描 /littlefs/apps/,注册 Lua App
     appManager.begin();    // (M5 起会据 OOBE 进度改 home)
     appManager.run();      // 一回合,末尾 goSleep 不返回
 }

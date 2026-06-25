@@ -16,9 +16,9 @@ list(REMOVE_ITEM LUA_SRCS
 )
 
 idf_component_register(
-    SRCS ${LUA_SRCS} starboard_lua.cpp lua_display.cpp lua_hal.cpp
+    SRCS ${LUA_SRCS} starboard_lua.cpp lua_display.cpp lua_hal.cpp lua_app_wrapper.cpp
     INCLUDE_DIRS "include"
-    REQUIRES starboard_display starboard_hal
+    REQUIRES starboard_display starboard_hal starboard_app
 )
 
 # Lua 配置:32位浮点+整数;压制 Lua C 源码的 -Werror 警告
