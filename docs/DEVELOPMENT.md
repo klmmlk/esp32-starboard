@@ -174,23 +174,33 @@ esp32-starboard/
 
 ---
 
-### 阶段 3：AppManager 框架 + 内置 App  ⬜
+### 阶段 3：AppManager 框架 + 内置 App  ✅(回合制深睡驱动 · 已烧录验证)
 
 **目标**：应用框架，参考 LiClock `include/AppManager.h` + `src/AppManager.cpp` + `src/apps/`。
 
 **参考**：`LiClock/include/AppManager.h`、`src/AppManager.cpp`、`src/apps/`、`src/main.cpp`。
 
-**Checklist**：
-- [ ] `AppBase` 基类 + `AppManager` 栈式调度（近乎原样移植，纯 C++ 无芯片依赖）：`gotoApp`/`goBack`/`recover`/`appSelector`/`setTimer`，生命周期 setup/lightsleep/wakeup/exit/deepsleep
-- [ ] `main.cpp`：`app_main` 起 `task_appManager` 跑 `appManager.update()`（替换 hello-world）
-- [ ] OOBE 判定：`hal.pref.getInt("oobe",0)<=2` → 进引导
-- [ ] 内置 App `appOOBE`（首次开机引导 + 配网）
-- [ ] 内置 App `appSettings`（屏幕方向/NTP 间隔/夜间模式）
-- [ ] 内置 App `appClock`（主时钟，先本地时钟，彩云天气 API 后置）
-- [ ] 内置 App `appWebServer`（进 Web 配置/OTA，依赖阶段4）
-- [ ] 验证：OOBE→配网→时钟→设置→Web 切换闭环；深睡唤醒恢复上次 App
+**核心改造（回合制深睡驱动，非照搬 LiClock 常驻 update() 死循环）**：
+一次唤醒 = `app_main` 重跑 = `appManager.run()` 跑一回合：恢复 currentApp → 系统手势（长按中键→App 列表）→ `currentApp->setup()`（画帧/GUI 交互/可调 gotoApp·goBack）→ 循环消费回合内挂起的切换 → 记 `RTC_DATA_ATTR lastAppName` → 保持期（前 10s 正常显示/超时后 `display.hibernate` 屏幕休眠，期间按键重画/列表，无操作超时后睡）→ `deepSleep`。App 的 setup() 返回进入保持期。深睡后 RAM 全丢，current/appStack 不跨深睡，仅靠 lastAppName 恢复「上次活跃的可恢复 App」，栈只重建 home+current 两层。
 
-**风险**：App 间依赖 display/hal/gui 的实例顺序，注意全局对象初始化。
+**Checklist**：
+- [x] `components/starboard_app/`：`AppBase`（精简 LiClock：删 lightsleep/wakeup/peripherals_requested/isLuaApp/wakeupIO/noDefaultEvent；全 virtual 统一生命周期）+ `AppManager`（回合制：`registerApp`/`begin`/`run`/`gotoApp`/`goBack`/`openSelector`/`switchToApp`/`deepSleep`/`setWakeupSec`）。LiClock GOTOAPP/GOBACK 两段重复的切换流程合并成 `switchToApp()`。
+- [x] `main/main.cpp`：`app_main` → `hal.init` → `display_init` → `GUI::initInput` → `registerBuiltinApps` → `appManager.begin` → `appManager.run`（替换原事件驱动 demo）。
+- [x] 系统手势：中键唤醒 → `digitalRead`+计时判长按（**非** `GUI::waitLongPress`：后者依赖 pollKeys 上升沿，唤醒时键已按着会产生伪上升沿被吞 → 误判短按）→ 长按 `openSelector`（`GUI::menu` 列 `showInList` 的 App）/ 短按跑当前 App。
+- [x] 🔶 **保持期 + 屏幕休眠 + 无操作超时**：`run()` setup 后保持唤醒 N 秒（`hal.pref("sleep_to")`，默认 60s 最小 10s）；前 10s 正常显示，满 10s 调 `display.hibernate()`（屏驱动关电源、E-ink 内容保留显示）；期间任意键重画（setup 自动 powerUp 唤醒屏幕）/中键长按进列表；超时后 `deepSleep`（芯片深睡）。settings 可调超时。
+- [x] OOBE 判定：`begin()` 里 `hal.pref.getInt("oobe",0)<3` → home=appOOBE。
+- [x] 内置 App `appOOBE`（`main/apps/appOOBE.cpp`）：欢迎 → SmartConfig 配网（复用 `hal.wifiInit`，保持唤醒轮询最长 5 分钟）→ NTP → `gotoApp("clock")`。`resumable=false`/`showInList=false`。配网失败进离线主时钟不卡死。
+- [x] 内置 App `appSettings`（`main/apps/appSettings.cpp`）：`GUI::menu` 菜单——屏幕方向 / NTP 间隔（`msgbox_number`）/ **重新配网**（`hal.wifiReprov`）/ **无操作超时**（`msgbox_number`）/ 关于 / 返回。全 NVS（`hal.pref`），不引入 config.json/LittleFS。
+- [x] 内置 App `appClock`（`main/apps/appClock.cpp`）：主时钟（搬原 `refreshMainFrame`），仅本地 RTC 时间，彩云天气 API 后置。
+- [ ] 内置 App `appWebServer`（进 Web 配置/OTA，依赖阶段4，留桩未做）
+- [x] 🔶 **WiFi 按需化**：`hal.init()` 去掉 `wifiInit()`（原每次唤醒强制联网阻塞几秒），NVS 提到 init；WiFi 改由 OOBE/天气 App 按需调。主时钟靠 RTC 走时。清掉 HAL 按键回调的 wantSleep（回合制 `run()` 末尾自睡）。
+- [x] 🔶 **重新配网 `hal.wifiReprov()`**：清旧配置 → 重启 WiFi → 复用 `WIFI_EVENT_STA_START` 自动 SmartConfig 分支（与开机配网同一路径）。踩坑见下方进度日志（busy callback 喂狗 / restore 重置成 softAP / 双 SC busy 等）。
+- [x] 🔶 **busy callback 喂狗**：GxEPD2 `_waitWhileBusy` 用 `__yield` 忙等只让给同优先级任务，IDLE0(优先级 0) 拿不到 CPU 喂狗 → 全刷 5s 触发 Task Watchdog panic。`guiBusyCallback` 里加 `vTaskDelay(1)` 让 IDLE 跑。
+- [x] 验证：✅ OOBE→配网→时钟→设置 切换闭环；✅ 长按中键→App 列表；✅ settings 重新配网→SmartConfig→连 `tongchuang1`→拿 IP→NTP 对时北京时间；✅ 屏幕休眠 + 无操作超时深睡（2026-06-25 烧录验证）。
+
+**状态**：阶段 3 完成并烧录验证。框架 + appClock/appSettings/appOOBE/openSelector + 重新配网 + 屏幕休眠 + 无操作超时全部跑通。已知后置项：① 屏幕方向设置存了 NVS 但 `display_init` 每次唤醒 `setRotation(0)` 会重置（需后续在 init 读 NVS）；② NTP 间隔设置无消费方（定时自动同步留到网络/天气阶段）；③ appWebServer 留阶段4。
+
+**风险**：App 间依赖 display/hal/gui 的实例顺序——用 main 显式 `registerApp`（非 LiClock 构造自注册）规避 C++ 跨编译单元静态初始化顺序坑；`RTC_DATA_ATTR lastAppName` 首次上电垃圾值靠 `wakeUpFromDeepSleep` 门控。
 
 ---
 
@@ -274,6 +284,10 @@ esp32-starboard/
 - 2026-06-24 —— **阶段2b starboard_gui 移植完成**(待编译+烧录验证)。新建 `components/starboard_gui/`(`.h`/`.cpp`/CMakeLists),移植 LiClock `GUI.cpp` 的 msgbox/msgbox_yn/msgbox_number/msgbox_time/menu/drawWindowsWithTitle/autoIndentDraw/waitLongPress。三色屏改造:① 删 push_buffer/pop_buffer——本项目 `GxEPD2_3C` **全库无** `swapBuffer`/`copyBuffer`/`current_buffer_idx`(grep 确认:LiClock 那版 GxEPD2 有、本项目版没有),故弹窗【不恢复背景】、返回后上层重画;② 每次画面变化用 `setFullWindow`/`firstPage`/`nextPage` 全刷分页;③ 颜色硬编码 0/1→COL_NORMAL/ALERT/BG;④ 坐标 296×128→400×300 居中、窗口放大(msgbox 280×190/menu 340×270);⑤ 按键 `hal.btn*.isPressing()` 阻塞轮询。⚠️ **关键坑**:hal 的 `task_hal_update` 是**独立任务**,GUI 阻塞轮询期间后台仍 tick,用户在 GUI 里按左键(否/减)稍久会触发长按回调→`wantSleep`→深睡打断交互——给 HAL 加 `volatile bool pauseButtons` 字段,`task_hal_update` 门控(GUI 期间跳过 tick+深睡),starboard_gui 进出阻塞函数成对切换;`isPressing()` 不受影响(实时 digitalRead)。menu 刷新策略经确认=**移动即全刷**(实时可见,代价每次按键等一次全刷;用户接受,若实测太慢再回头改)。drawLBM/fileDialog(需 LittleFS)、graph.cpp(天气专用)本轮后置。main.cpp 加 `guiDemo`:中键唤醒→msgbox→msgbox_yn→menu→刷回主帧。⚠️ 待用户 `idf.py build` + 烧录验证(本环境无 idf.py);顺带报【全刷实测耗时】。若编译报 `Fonts/FreeSans9pt7b.h` 找不到,给 `starboard_gui/CMakeLists` 加 `REQUIRES Adafruit_GFX`(msgbox_number/time 数字字体经 Adafruit_GFX,正常经 starboard_display→GxEPD2→Adafruit_GFX 传递可见)。
 - 2026-06-24 —— **stage2c 局刷提速实验(放弃)**。为解决全刷 5.4s 期间按键丢失,尝试三色屏黑白局刷提速。改 `GxEPD2_420c_GDEY042Z98::refresh_bw` 用 `0xfc`(SSD1683 OTP 局刷,借自同芯片黑白屏 GxEPD2_420_GDEY042T81)+ 去掉错误的 `0x21=0x40`(bypass RED 在三色屏=红 RAM 当白输出→红条消失,实测定位)。结果:局刷【能保红】(窗口外红保持)+ 窗口内黑白清晰,但【耗时 5118ms≈全刷 5434ms,没提速】。根因:GDEY042Z98 `hasFastPartialUpdate=false`、`hasPartialUpdate` 注释"uses full window refresh"——OTP 局刷只改刷哪块 RAM,刷新波形仍全屏慢(三色屏红粒子物理分离需长时间)。自定义 register LUT(e-Paper_FastFreshBWOnColor 那套)是 **UC8179 特例**(命令/LUT 地址/屏物理均与 SSD1683 不同),社区共识"三色屏不支持快速局刷",SSD1683 大概率走不通。**结论:SSD1683 三色屏快速刷新是物理死路,放弃局刷回全刷。** 刷新期间按键丢失改用【busy callback】解决(GxEPD2 `_waitWhileBusy` 5s 循环每轮调 `_busy_callback`,注册回调读三键+边沿检测存缓冲,GUI 刷完消费)。stage2c 分支已删。⚠️ 教训:墨水屏若需快速刷新,别选三色屏(黑白版如 GDEY042T81 支持快速局刷);三色屏只能慢全刷,靠事件驱动+按键缓冲缓解体验。
 - 2026-06-25 —— **阶段2 收尾:busy callback 防丢键 + menu 合并窗口**(已烧录验证)。三色屏全刷 ~5s,期间按键会丢:GUI 的 `isPressing` 轮询窗口卡在 `_waitWhileBusy`,用户按了又松,刷完才回到轮询、读到"已松"→ 漏检。解法:① `initInput()` 注册 `display.epd2.setBusyCallback`——GxEPD2 的 `_waitWhileBusy` 在等 BUSY 的 5s 循环里每轮调 `_busy_callback`,回调里读三键 `isPressing()` + 上升沿检测 → 按键事件环形队列;GUI 改 `waitKeyEvent()` 消费队列(刷屏时 busy cb 填、非刷屏 GUI 自己 poll,同一队列),刷完即响应、不丢键。② menu 合并窗口:连按 N 次移动只渲染最终位置(避免 N×5s 卡顿),`waitKeyEvent` 拿首事件后开 ~300ms 窗口、连续移动叠加、停顿才刷一帧;中键事件放回队列下轮处理。⚠️ **关键坑**:渲染须放在 `waitKeyEvent` 【前】(循环顶),否则进入 menu 黑屏、第一次按键才显示菜单(像"第一次立即响应"的假象,曾误判合并窗口失效、白改一轮)。`pauseButtons` 在事件模式下仍需(GUI 期间停后台 tick 防左键长按深睡)。number/time 的长按移位与合并穿插复杂,暂未加合并窗口(调数字按几次可接受)。
+- 2026-06-25 —— **阶段3 启动 + 调研**(经 3 个 Explore agent)。核心结论:LiClock 的常驻 `task_appManager` 死循环 + lightsleep/deepsleep 模型与本项目的【纯事件驱动+深睡】不兼容,改造为**回合制**:一次唤醒 = `app_main` 重跑 = `appManager.run()` 一回合(恢复App→系统手势→setup链→记名→深睡),App setup() 返回即回合结束。可直搬:AppBase 字段、`appList`+`findByName`、`RTC_DATA_ATTR lastAppName`+recover、appStack 栈式语义;LiClock GOTOAPP/GOBACK 两段重复切换合并成 `switchToApp()`。关键决策(经用户确认):**长按中键→App列表**(复用现有 `GUI::waitLongPress`+`GUI::menu`,零改动 starboard_gui)、**纯 NVS 持久化**(不引入 LittleFS)、内置 App=Clock+Settings+OOBE+Selector。已发现的现有组件缺口:① `hal.init` 每次唤醒强制 `wifiInit` 阻塞几秒→拆成按需(OOBE/天气 App 才调);② HAL 按键回调的 wantSleep 回合制不需要;③ 按键事件队列锁在 gui 匿名 namespace——但系统手势靠"唤醒键身份路由+GUI阻塞函数"绕开,无需独立分发层。
+- 2026-06-25 —— **阶段3 M1-M5 代码完成**(待烧录验证)。新建 `components/starboard_app/`(AppBase 精简版 + 回合制 AppManager:`registerApp`/`begin`/`run`/`gotoApp`/`goBack`/`openSelector`/`switchToApp`/`deepSleep`)。`main/apps/` 三个内置 App:appClock(搬 refreshMainFrame,仅本地RTC时间)、appSettings(GUI::menu 屏幕方向/NTP间隔/关于/返回,全 NVS)、appOOBE(欢迎→SmartConfig配网→NTP→gotoApp clock,resumable=false/showInList=false,配网失败进离线不卡死);appSelector 不独立成 App、是 `AppManager::openSelector`(GUI::menu 列 showInList)。main.cpp 改 `app_main`→registerBuiltinApps→begin→run。hal 改动:① `init` 去掉 `wifiInit`+把 `nvs_flash_init` 提到 init(pref.begin 前要 NVS 就绪);② 清按键回调 wantSleep + 删 wantSleep/sleepSec 字段 + task_hal_update 去 wantSleep 分支。交互闭环:中键唤醒→waitLongPress 判长短→长按 openSelector/短按跑当前App;setup 内 gotoApp/goBack 设 pendingSwitch/pendingBack,run 的 do-while 链式消费。⚠️ 待烧录验证(本环境无 idf.py);后置项:屏幕方向设置被 display_init 每次重置、NTP间隔无定时消费方、appWebServer 留阶段4。
+- 2026-06-25 —— **阶段3 烧录验证 + 长按检测修正**(已烧录)。烧录发现长按中键进不去 App 列表——`GUI::waitLongPress` 依赖 `pollKeys` 上升沿(edge: 未按→按下),但唤醒时键已按着,pollKeys 首次执行产生「伪上升沿」被 `if(polled&&btnIsPress)` 吞掉 → 永远进不了 600ms 长按计时 → 空循环直到松手 → 误判短按。改用 `digitalRead`+持续计时(从唤醒时刻起算,不依赖上升沿)修复。
+- 2026-06-25 —— **阶段3 功能扩展:重新配网 + 屏幕休眠 + 无操作超时**(已烧录验证)。① settings 加「重新配网」:新建 `hal.wifiReprov()`——清旧配置+重启 WiFi,复用开机配网同一路径(`esp_wifi_start`→STA_START→配置空→自动 SmartConfig)。② 屏幕休眠:`run()` setup 后进【保持期】,前 10s 正常显示,满 10s `display.hibernate()`(屏驱动关电源、E-ink 内容保留显示),hal CMakeLists 加 REQUIRES starboard_display。③ 无操作超时:保持期 N 秒(`hal.pref("sleep_to")` 默认 60s 最小 10s,settings 可调)后 `deepSleep`;保持期按键重画/中键长按进列表。⚠️ **重新配网连环坑**(烧录逐一定位):① `esp_wifi_*` 在驱动未 init 时调用(`ESP_ERR_WIFI_NOT_INIT`)→ 抽 `wifiEnsureInit()` 幂等初始化;② 空配置 `DISCONNECTED` handler 循环重连抢 WiFi 时间 → 配网前禁 auto-reconnect;③ 启动两个 SmartConfig(`smartconfig busy`)→ 全局开关 `allowAutoSmartconfig` 抑制 STA_START 自动分支的重复启动;④ `esp_wifi_restore()` 把模式重置成 **softAP**(SmartConfig sniffer 必须 STA 模式,AP 下报 `errno 12293 sc_sniffer`)→ start 前 `esp_wifi_set_mode(WIFI_MODE_STA)`;⑤ `esp_smartconfig_start` 在 WiFi 已运行但状态不对时返回 `-1 ESP_ERR_WIFI_CONN` → 不显式启,改走 STA_START 自动分支。最终验证:重新配网→微信 AirKiss→收到 `tongchuang1`→连接→拿 IP 192.168.10.24→NTP 对时北京时间 17:22:15,全链路通。⚠️ **全刷 watchdog panic**:GxEPD2 `_waitWhileBusy` 用 `__yield` 忙等只让给同优先级任务,IDLE0(优先级0) 拿不到 CPU 喂狗 → 全刷 5s 触发 Task Watchdog panic(backtrace 定位)。修法:`guiBusyCallback` 里 `pollKeys()` 后加 `vTaskDelay(pdMS_TO_TICKS(1))` 让 IDLE 跑。教训:墨水屏长 busy-wait 会饿死 IDLE watchdog,需在 busy callback 里主动 yield 喂狗。`ntpStart()` 加 `ntpInited` 防重复(消除 `esp_netif_sntp already initialized` 警告)。
 
 ---
 

@@ -35,9 +35,9 @@ public:
     OneButton btnl = OneButton(PIN_BUTTONL, BUTTON_ACTIVE_LOW);
     OneButton btnc = OneButton(PIN_BUTTONC, BUTTON_ACTIVE_LOW);
     OneButton btnr = OneButton(PIN_BUTTONR, BUTTON_ACTIVE_LOW);
-    /** GUI 阻塞交互期间置 true:task_hal_update 暂停 tick 与深睡处理,防
-     *  GUI 里按左键(否/减)稍久被后台长按回调触发 wantSleep→深睡打断交互。
-     *  starboard_gui 进出阻塞函数时自动配对切换。isPressing() 不受影响(实时 digitalRead)。 */
+    /** GUI / appManager 阻塞交互期间置 true:task_hal_update 暂停 tick,防后台按键回调
+     *  打断交互(如 GUI 里按左键稍久)。starboard_gui 进出阻塞函数、appManager.run() 检测
+     *  长按手势时自动配对切换。isPressing() 不受影响(实时 digitalRead)。 */
     volatile bool pauseButtons = false;
     /** 三个按键各 tick 一次,周期调用(由内部任务保证)。 */
     void tickButtons();
@@ -69,17 +69,20 @@ public:
     void wifiInit(uint32_t timeoutSec = 8);
     /** GOT_IP 后启动 esp_netif_sntp 同步。 */
     void ntpStart();
+    /**
+     * @brief 重新配网:清旧 WiFi 配置 → 停/重启 WiFi → 进入 SmartConfig 等新网。
+     *        阻塞直到连上或超时(默认 180s)。调用方应先显示配网提示帧。
+     *        依赖 wifiEventHandler 已注册(首次 wifiInit 时注册;未注册则 self-register)。
+     */
+    void wifiReprov(uint32_t timeoutSec = 180);
 
     // ------------------------- 深睡(M5 起实现) -------------------------
     bool wakeUpFromDeepSleep = false;
     /** 上次唤醒的按键 PIN(4/5/6),-1=非按键唤醒(TIMER/正常上电)。M5 验证用。 */
     int wakeupButton = -1;
-    /** 进深睡。sec>0 同时启用 timer 唤醒(秒);sec==0 仅按键唤醒。不返回。 */
+    /** 进深睡。sec>0 同时启用 timer 唤醒(秒);sec==0 仅按键唤醒。不返回。
+     *  阶段3 起由 appManager.deepSleep() 调用(回合制:run() 末尾睡,不再用按键回调置标志)。 */
     void goSleep(uint32_t sec = 0);
-    /** 请求深睡标志:按键回调只置位,任务循环在 tick() 返回后的干净栈上再调 goSleep(),
-     *  避免在 OneButton::tick 的回调栈里直接跑 esp_sleep(重入 + 深栈)。 */
-    volatile bool wantSleep = false;
-    uint32_t sleepSec = 0;
     /** 在 init 早期调用:检测唤醒原因,设 wakeUpFromDeepSleep,记录唤醒键。 */
     void checkWakeupCause();
 

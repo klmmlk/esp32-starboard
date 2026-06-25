@@ -12,6 +12,8 @@
 
 #include "starboard_gui.h"
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>        // vTaskDelay(busy callback 里让 IDLE 喂狗)
 #include <starboard_display.h>   // display, u8g2, COL_*, CN_FONT_MAIN
 #include <starboard_hal.h>       // hal, btnl/btnc/btnr, pauseButtons
 #include <Fonts/FreeSans9pt7b.h> // msgbox_number/time 数字字体
@@ -33,6 +35,14 @@ namespace
     int keyHead = 0, keyTail = 0;
     bool lastL = false, lastC = false, lastR = false; // 上次电平(上升沿检测)
 
+    // 软件消抖:同键两次 push 间隔 < DEBOUNCE_MS 视为抖动,忽略。
+    // 必要性:pollKeys 用 OneButton::isPressing()(裸 digitalRead)做上升沿检测,无消抖;
+    //         机械按键按下抖动 5~20ms 会产生多个上升沿 → 一次按键 push 多次 → 合并窗口内
+    //         selected 多次 ++ → 短菜单回绕(表现为"按右键选中框反而回退")。
+    //         50ms 能吃掉抖动脉冲(间隔<20ms),又不影响人手正常连按(间隔>100ms)。
+    constexpr unsigned long DEBOUNCE_MS = 50;
+    unsigned long lastPushL = 0, lastPushC = 0, lastPushR = 0;
+
     void pushKey(int pin)
     {
         keyBuf[keyTail] = (int8_t)pin;
@@ -40,15 +50,29 @@ namespace
         if (next == keyHead) keyHead = (keyHead + 1) % KEY_BUF_SIZE; // 满则丢最旧
         keyTail = next;
     }
-    // 读三键 isPressing + 上升沿(未按→按下)→ push 事件。刷屏(busy cb)/非刷屏(GUI poll)都调。
+    // 带消抖的 push:同键在 DEBOUNCE_MS 内重复触发则丢弃。unsigned 减法对 millis 回绕安全。
+    void pushKeyDebounced(int pin)
+    {
+        unsigned long now = millis();
+        unsigned long *t = nullptr;
+        if (pin == PIN_BUTTONL) t = &lastPushL;
+        else if (pin == PIN_BUTTONC) t = &lastPushC;
+        else if (pin == PIN_BUTTONR) t = &lastPushR;
+        else return;
+        if (now - *t < DEBOUNCE_MS)
+            return; // 消抖窗口内,忽略(抖动多余脉冲)
+        *t = now;
+        pushKey(pin);
+    }
+    // 读三键 isPressing + 上升沿(未按→按下)→ push 事件(消抖)。刷屏(busy cb)/非刷屏(GUI poll)都调。
     void pollKeys()
     {
         bool l = hal.btnl.isPressing();
         bool c = hal.btnc.isPressing();
         bool r = hal.btnr.isPressing();
-        if (!lastL && l) pushKey(PIN_BUTTONL);
-        if (!lastC && c) pushKey(PIN_BUTTONC);
-        if (!lastR && r) pushKey(PIN_BUTTONR);
+        if (!lastL && l) pushKeyDebounced(PIN_BUTTONL);
+        if (!lastC && c) pushKeyDebounced(PIN_BUTTONC);
+        if (!lastR && r) pushKeyDebounced(PIN_BUTTONR);
         lastL = l; lastC = c; lastR = r;
     }
     int popKey() // -1 = 空
@@ -66,7 +90,16 @@ namespace
         lastC = hal.btnc.isPressing();
         lastR = hal.btnr.isPressing();
     }
-    void guiBusyCallback(const void *) { pollKeys(); }
+    // busy callback:GxEPD2 全刷 _waitWhileBusy 每轮调。两件事:
+    //   ① pollKeys 捕获全刷期间的按键(防丢键,见风险#3);
+    //   ② vTaskDelay(1) 让 IDLE0 任务有机会跑 → 喂 Task Watchdog。否则全刷 5s 忙等
+    //      (_waitWhileBusy 用 __yield 只让给同优先级任务,IDLE 优先级 0 拿不到 CPU)
+    //      会触发 IDLE0 watchdog panic。1ms 让出 ×5000 轮 ≈ 5s,够喂饱狗。
+    void guiBusyCallback(const void *)
+    {
+        pollKeys();
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
 } // namespace
 
 namespace GUI
