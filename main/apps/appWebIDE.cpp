@@ -1,7 +1,8 @@
 // appWebIDE —— Blockly 可视化编程 Web IDE
 //
-// 进入后连接 WiFi,启动 Web 服务器,显示设备 IP。
-// 用户在同局域网用浏览器打开 http://<设备IP>/ 使用 Blockly。
+// 进入后连接 WiFi → 启动 Web 服务器 → 进入轮询循环持续处理请求
+// 用户同局域网用浏览器打开 http://<设备IP>/ 使用 Blockly
+// 按中键退出返回 App 列表
 
 #include "apps.h"
 #include <starboard_app.h>
@@ -9,11 +10,31 @@
 #include <starboard_display.h>
 #include <starboard_gui.h>
 #include <lua_webserver.h>
+#include <starboard_config.h>
 #include <Arduino.h>
-#include <WiFi.h>
 
 namespace
 {
+
+void drawStatus(const char *line1, const char *line2 = nullptr,
+                const char *line3 = nullptr, const char *line4 = nullptr)
+{
+    display.setFullWindow();
+    display.firstPage();
+    do
+    {
+        display.fillScreen(COL_BG);
+        u8g2.setFont(CN_FONT_MAIN);
+        int y = 80;
+        auto line = [&](const char *s, uint16_t col) {
+            if (s) { u8g2.setForegroundColor(col); u8g2.drawUTF8(30, y, s); y += 36; }
+        };
+        line(line1, COL_NORMAL);
+        line(line2, COL_NORMAL);
+        line(line3, COL_ALERT);
+        line(line4, COL_NORMAL);
+    } while (display.nextPage());
+}
 
 class AppWebIDE : public AppBase
 {
@@ -29,17 +50,7 @@ public:
     void setup() override
     {
         // 连接 WiFi
-        {
-            display.setFullWindow();
-            display.firstPage();
-            do {
-                display.fillScreen(COL_BG);
-                u8g2.setFont(CN_FONT_MAIN);
-                u8g2.setForegroundColor(COL_NORMAL);
-                u8g2.drawUTF8(40, 150, "正在连接 WiFi...");
-            } while (display.nextPage());
-        }
-
+        drawStatus("正在连接 WiFi...");
         hal.wifiInit(10);
 
         if (hal.wifiState != HAL::WifiState::Connected)
@@ -52,10 +63,41 @@ public:
         // 启动 Web 服务器
         startBlocklyServer();
 
-        String ipStr = WiFi.localIP().toString();
-        String msg = "Blockly 已启动\n\n浏览器打开:\nhttp://" + ipStr + "/\n\n可视化编程,保存即生效";
+        // 进入轮询循环,同时服务 Web 请求
+        drawStatus("Web IDE 已启动", hal.wifiIp.c_str(),
+                   "浏览器打开此地址", "按中键退出");
 
-        GUI::msgbox("Web 编程", msg.c_str());
+        unsigned long startMs = millis();
+        const unsigned long TIMEOUT_MS = 30 * 60 * 1000UL; // 30 分钟超时
+
+        while (true)
+        {
+            // 处理 Web 请求
+            handleBlocklyClient();
+
+            // 超时检查
+            if (millis() - startMs > TIMEOUT_MS)
+            {
+                drawStatus("Web IDE 超时", "即将返回");
+                delay(1000);
+                break;
+            }
+
+            // 中键退出
+            if (digitalRead(PIN_BUTTONC) == LOW)
+            {
+                delay(50);
+                if (digitalRead(PIN_BUTTONC) == LOW)
+                {
+                    drawStatus("已退出", "返回 App 列表");
+                    delay(1000);
+                    break;
+                }
+            }
+
+            delay(50);
+        }
+
         appManager.goBack();
     }
 };

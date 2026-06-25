@@ -61,6 +61,7 @@ public:
     enum class WifiState { Idle, Connecting, Connected, Provisioning, Failed };
     WifiState wifiState = WifiState::Idle;
     String wifiSsid;         // 连上后填当前 SSID
+    String wifiIp;           // 连上后填当前 IP 地址
     bool timeSynced = false; // NTP 是否已同步
     /** 建栈:NVS/netif/event/默认 STA + 注册 WIFI/IP/SC 事件 + esp_wifi_start,
      *  然后【阻塞等连接结果(超时 timeoutSec 秒)】。连上/超时都返回,不让 app 无限挂住。

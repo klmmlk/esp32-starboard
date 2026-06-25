@@ -114,6 +114,39 @@ void HAL::init()
         {
             Serial.println("[HAL] LittleFS 挂载成功(/littlefs)");
             // 测试:写一个 hello.lua
+            // 创建示例 Lua App(/littlefs/apps/demo/)
+            {
+                // 创建 app 目录
+                mkdir("/littlefs/apps", 0755);
+                mkdir("/littlefs/apps/demo", 0755);
+
+                // conf.lua
+                FILE *f = fopen("/littlefs/apps/demo/conf.lua", "w");
+                if (f)
+                {
+                    fprintf(f, "title = \"Lua 演示\"\n");
+                    fclose(f);
+                }
+
+                // main.lua
+                f = fopen("/littlefs/apps/demo/main.lua", "w");
+                if (f)
+                {
+                    fprintf(f, "-- Lua 演示 App\n");
+                    fprintf(f, "display.beginFrame()\n");
+                    fprintf(f, "display.fillScreen(1)\n");
+                    fprintf(f, "display.drawRect(10, 10, 380, 280, 0)\n");
+                    fprintf(f, "display.setCursor(40, 150)\n");
+                    fprintf(f, "display.setTextColor(0)\n");
+                    fprintf(f, "display.u8g2Print('我是 Lua App!')\n");
+                    fprintf(f, "display.u8g2Print('按中键返回')\n");
+                    fprintf(f, "display.endFrame()\n");
+                    fclose(f);
+                    Serial.println("[HAL] /littlefs/apps/demo/ 已创建");
+                }
+            }
+
+            // hello.lua 测试文件(阶段5b Step2 验证用)
             FILE *f = fopen("/littlefs/hello.lua", "w");
             if (f)
             {
@@ -308,10 +341,18 @@ static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
     {
         hal.wifiState = HAL::WifiState::Connected;
         wifiReconnectFail = 0; // 连上,清零失败计数
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)data;
+        if (event)
+        {
+            char ipBuf[16];
+            esp_ip4addr_ntoa(&event->ip_info.ip, ipBuf, sizeof(ipBuf));
+            hal.wifiIp = ipBuf;
+        }
         wifi_config_t cur = {};
         esp_wifi_get_config(WIFI_IF_STA, &cur);
         hal.wifiSsid = (const char *)cur.sta.ssid;
-        Serial.printf("[HAL] WiFi 已连接,SSID=%s,启动 NTP\n", hal.wifiSsid.c_str());
+        Serial.printf("[HAL] WiFi 已连接,SSID=%s,IP=%s,启动 NTP\n",
+                      hal.wifiSsid.c_str(), hal.wifiIp.c_str());
         hal.ntpStart();
     }
 }
@@ -424,7 +465,19 @@ void HAL::wifiReprov(uint32_t timeoutSec)
         wifi_config_t cur = {};
         esp_wifi_get_config(WIFI_IF_STA, &cur);
         wifiSsid = (const char *)cur.sta.ssid;
-        Serial.printf("[HAL] SSID=%s\n", wifiSsid.c_str());
+        // 获取 IP(与 GOT_IP handler 相同方式)
+        {
+            esp_netif_t *n = esp_netif_get_handle_from_ifkey("STA_DEF");
+            if (n)
+            {
+                esp_netif_ip_info_t ipInfo;
+                esp_netif_get_ip_info(n, &ipInfo);
+                char ipBuf[16];
+                esp_ip4addr_ntoa(&ipInfo.ip, ipBuf, sizeof(ipBuf));
+                wifiIp = ipBuf;
+            }
+        }
+        Serial.printf("[HAL] SSID=%s, IP=%s\n", wifiSsid.c_str(), wifiIp.c_str());
     }
     else
     {
