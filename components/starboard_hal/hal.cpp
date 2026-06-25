@@ -13,6 +13,7 @@
 #include <esp_netif.h>       // esp_netif_create_default_wifi_sta
 #include <esp_netif_sntp.h>  // esp_netif_sntp_*(NTP,esp_netif 组件)
 #include <starboard_display.h> // display.hibernate(深睡前关屏幕驱动电源)
+#include <esp_littlefs.h>       // LittleFS VFS 挂载
 
 // 深睡唤醒计数(存 RTC 慢速内存,跨深睡保留)。M5 验证 RTC 内存保留用。
 RTC_DATA_ATTR uint32_t bootCount = 0;
@@ -101,6 +102,38 @@ void HAL::init()
     // 启动按键轮询任务
     xTaskCreate(task_hal_update, "hal_update", 8192, nullptr, 5, nullptr);
     Serial.println("[HAL] 按键轮询任务已启动");
+
+    // LittleFS 挂载(分区:spiffs,路径:/littlefs)。
+    {
+        esp_vfs_littlefs_conf_t lfsConf = {};
+        lfsConf.base_path = "/littlefs";
+        lfsConf.partition_label = "spiffs";
+        lfsConf.format_if_mount_failed = true;
+        err = esp_vfs_littlefs_register(&lfsConf);
+        if (err == ESP_OK)
+        {
+            Serial.println("[HAL] LittleFS 挂载成功(/littlefs)");
+            // 测试:写一个 hello.lua
+            FILE *f = fopen("/littlefs/hello.lua", "w");
+            if (f)
+            {
+                fprintf(f, "-- hello from LittleFS!\n");
+                fprintf(f, "print('Lua file from LittleFS OK!')\n");
+                fprintf(f, "display.beginFrame()\n");
+                fprintf(f, "display.clearScreen(1)\n");
+                fprintf(f, "display.setCursor(40, 150)\n");
+                fprintf(f, "display.setTextColor(0)\n");
+                fprintf(f, "display.u8g2Print('Hello from /littlefs/hello.lua')\n");
+                fprintf(f, "display.endFrame()\n");
+                fclose(f);
+                Serial.println("[HAL] /littlefs/hello.lua 已写入");
+            }
+        }
+        else
+        {
+            Serial.printf("[HAL] LittleFS 挂载失败: %s\n", esp_err_to_name(err));
+        }
+    }
 
     // WiFi/NTP 不在 init 联网(阶段3 起【按需】:OOBE 配网 / 天气 App 才调 hal.wifiInit)。
     // 主时钟靠深睡期间 RTC 维持走时;首次上电未对时显示 --:--,由 OOBE 配网 + NTP 校准。

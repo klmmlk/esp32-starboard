@@ -68,20 +68,23 @@ public:
 
         int ret = lua_execute_string(L, script);
 
-        // 3. 全刷使显示生效
-        display.setFullWindow();
-        display.firstPage();
-        do { } while (display.nextPage());
+        // 3. 尝试从文件加载
+        int fileRet = lua_execute(L, "/littlefs/hello.lua");
 
         // 4. 显示结果
+        char buf[128];
         if (ret == 0)
         {
-            GUI::msgbox("Lua 测试", "脚本执行成功\n串口有 print 输出");
+            snprintf(buf, sizeof(buf),
+                     "字符串执行: %s\n文件执行: %s\n串口有 print 输出",
+                     ret == 0 ? "OK" : "FAIL",
+                     fileRet == 0 ? "OK" : "FAIL");
         }
         else
         {
-            GUI::msgbox("Lua 测试", "脚本执行失败\n请查看串口输出");
+            snprintf(buf, sizeof(buf), "脚本执行失败\n请查看串口输出");
         }
+        GUI::msgbox("Lua 测试", buf);
 
         // 5. 清理
         closeLua(L);
