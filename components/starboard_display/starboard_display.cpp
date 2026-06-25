@@ -19,7 +19,7 @@ U8G2_FOR_ADAFRUIT_GFX u8g2;
 void display_init()
 {
     display.init(115200);   // 参数=诊断日志波特率(顺带初始化 Serial)
-    display.setRotation(0);
+    // setRotation 由 appManager.run() 从 NVS 读,screen_orient 设置才生效;这里不设默认
     display.setTextColor(COL_NORMAL);
     display.fillScreen(COL_BG);
 

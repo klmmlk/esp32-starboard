@@ -132,6 +132,12 @@ void AppManager::run()
         Serial.printf("[APP] 恢复 App=%s (唤醒=%s, 键=%d)\n",
                       current ? current->name : "(null)",
                       hal.wakeUpFromDeepSleep ? "深睡" : "冷启动", hal.wakeupButton);
+
+        // 从 NVS 读屏幕方向并设回 display(settings 写的,但 display_init 每次 setRotation(0) 重置)
+        {
+            uint8_t rot = hal.pref.getUChar("screen_orient", 0);
+            display.setRotation(rot == 1 ? 2 : 0); // 0=正常, 2=反转180°
+        }
     }
 
     // 2. 系统手势:中键唤醒 → 长按(>=500ms)→ App 列表;松手(短按)→ 跑当前 App
