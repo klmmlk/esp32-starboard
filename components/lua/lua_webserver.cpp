@@ -10,7 +10,6 @@
 
 #include <Arduino.h>
 #include <WebServer.h>
-#include <WiFi.h>
 #include <dirent.h>
 #include <starboard_hal.h>
 #include "starboard_lua.h"
@@ -347,7 +346,7 @@ void startBlocklyServer()
 
     server.begin();
     serverStarted = true;
-    Serial.printf("[Web] Blockly 服务器已启动(http://%s/)\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[Web] Blockly 服务器已启动(http://%s/)\n", hal.wifiIp.c_str());
 }
 
 void handleBlocklyClient()
