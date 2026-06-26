@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /d/esp-idf -name \"esp_ota_ops.h\" 2>/dev/null | head -5)",
+      "Read(//d//**)",
+      "Bash(find /d/esp-idf -name \"esp_http_server.h\" 2>/dev/null | head -5)",
+      "Bash(find d:/idf/managed_components -name \"espota.py\" 2>/dev/null; find d:/esp -name \"espota.py\" 2>/dev/null; find /c/Users -name \"espota.py\" 2>/dev/null)",
+      "Read(//c/Users/**)",
+      "Bash(git commit -m '阶段4:HTTP OTA 空中升级\\(IDF 原生 esp_http_client + esp_ota_opsclient + esp_ota_ops\\) *)",
+      "mcp__context7__resolve-library-id",
+      "PowerShell(cd 'd:/idf/LiClock/src/lua/modules'; $f='lua_appManager.cpp'; $c=Get-Content $f -Raw; $m=[regex]::Match\\($c, 'static const luaL_Reg[^}]+}'\\))",
+      "Bash(cp d:/idf/LiClock/lib/lua/*.c d:/idf/components/lua/)",
+      "Bash(cp d:/idf/LiClock/lib/lua/*.h d:/idf/components/lua/include/)",
+      "Bash(C:/Espressif/tools/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/bin/xtensa-esp32s3-elf-nm d:/idf/build/esp-idf/lua/CMakeFiles/__idf_lua.dir/lapi.c.obj)",
+      "Bash(C:/Espressif/tools/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/bin/xtensa-esp32s3-elf-nm d:/idf/build/esp-idf/lua/CMakeFiles/__idf_lua.dir/starboard_lua.cpp.obj)",
+      "mcp__context7__query-docs",
+      "Bash(git commit -m '阶段5b Step1-2:LittleFS 挂载 + 文件 Lua 执行 *)",
+      "Bash(C:/Espressif/tools/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/bin/xtensa-esp32s3-elf-nm d:/idf/build/esp-idf/espressif__arduino-esp32/CMakeFiles/__idf_espressif__arduino-esp32.dir/libraries/NetworkClientSecure/src/ssl_client.cpp.obj)",
+      "Bash(find d:/idf/managed_components -name \"GxEPD2_NotPagedExample*\" 2>/dev/null; find / -name \"GxEPD2_NotPagedExample*\" 2>/dev/null | head -3)",
+      "Bash(git commit -m 'fix:Web IDE TCP 重传去重 + 删除内置测试 App *)"
+    ]
+  }
+}

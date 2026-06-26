@@ -20,16 +20,16 @@ extern "C" {
 
 static int display_beginFrame(lua_State *L)
 {
-    // 开始一帧:设全窗 + firstPage(之后绘制都进入缓冲区)
+    // 开始一帧:设全窗,之后绘制都进入整屏缓冲区(_black_buffer/_color_buffer)
     display.setFullWindow();
-    display.firstPage();
     return 0;
 }
 
 static int display_endFrame(lua_State *L)
 {
-    // 结束一帧:nextPage 将缓冲区内容发送到屏幕
-    display.nextPage();
+    // 结束一帧:直接把整屏缓冲区一次性刷到屏幕(非分页模式)
+    // display.display() 内部 = writeImage(整屏) + refresh + powerOff
+    display.display(false); // false = 全屏刷新(非局部)
     return 0;
 }
 

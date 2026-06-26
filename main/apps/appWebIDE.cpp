@@ -67,18 +67,21 @@ public:
         drawStatus("Web IDE 已启动", hal.wifiIp.c_str(),
                    "浏览器打开此地址", "按中键退出");
 
-        unsigned long startMs = millis();
-        const unsigned long TIMEOUT_MS = 30 * 60 * 1000UL; // 30 分钟超时
+        const unsigned long IDLE_TIMEOUT_SEC = 10 * 60; // 无连接 10 分钟超时
 
         while (true)
         {
-            // 处理 Web 请求
+            // 处理 Web 请求(有请求时会刷新活动时间)
             handleBlocklyClient();
 
-            // 超时检查
-            if (millis() - startMs > TIMEOUT_MS)
+            // 主线程检测并执行待运行的 App(/api/run 设的标志)
+            // 在主线程跑 Lua+display,避免和 webserver 线程冲突导致残影/重绘
+            pollRunRequest();
+
+            // 空闲超时:长时间无客户端访问才退出(有活跃连接永不超时)
+            if (blocklyServerIdleTimeout(IDLE_TIMEOUT_SEC))
             {
-                drawStatus("Web IDE 超时", "即将返回");
+                drawStatus("Web IDE 空闲超时", "即将返回");
                 delay(1000);
                 break;
             }
