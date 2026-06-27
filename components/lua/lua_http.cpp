@@ -26,10 +26,10 @@ static int lua_http_get(lua_State *L)
         return luaL_error(L, "参数: url");
     const char *url = luaL_checkstring(L, 1);
 
+    // HTTP 请求配置
     esp_http_client_config_t cfg = {};
     cfg.url = url;
     cfg.timeout_ms = 10000;
-    cfg.skip_cert_common_name_check = true;
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client)
@@ -48,7 +48,6 @@ static int lua_http_get(lua_State *L)
         return 2;
     }
 
-    int64_t contentLen = esp_http_client_fetch_headers(client);
     int statusCode = esp_http_client_get_status_code(client);
 
     // 读取全部响应体(最大 16KB)

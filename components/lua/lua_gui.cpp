@@ -6,6 +6,7 @@
 
 #include "starboard_lua.h"
 #include <starboard_gui.h>
+#include <starboard_display.h>
 #include <Arduino.h>
 #include <string.h>
 
@@ -20,6 +21,49 @@ static int gui_waitLongPress(lua_State *L)
         return luaL_error(L, "参数个数不符");
     int btn = luaL_checkinteger(L, 1);
     lua_pushboolean(L, GUI::waitLongPress(btn));
+    return 1;
+}
+
+// 阻塞等待任意按键,返回 1=左 2=中 3=右。
+// 用非阻塞 tryGetKey 轮询,每轮检查停止标志——这样长按中键强停时能立即跳出
+// (若直接用 GUI::waitKey,会死等新按键事件,无法被强停)。
+static int gui_waitKey(lua_State *L)
+{
+    for (;;)
+    {
+        if (luaStopRequested())
+            luaL_error(L, "stopped by user (长按中键强制停止)");
+        int k = GUI::tryGetKey();
+        if (k != 0)
+        {
+            lua_pushinteger(L, k);
+            return 1;
+        }
+        delay(10);
+    }
+}
+
+// 阻塞等待【指定】按键被按下(忽略其他键)。target: 1=左 2=中 3=右。
+static int gui_waitButton(lua_State *L)
+{
+    int target = (int)luaL_checkinteger(L, 1);
+    for (;;)
+    {
+        if (luaStopRequested())
+            luaL_error(L, "stopped by user (长按中键强制停止)");
+        int k = GUI::tryGetKey();
+        if (k != 0 && k == target)
+            return 0;
+        delay(10);
+    }
+}
+
+// 非阻塞读按键:有键返回 1/2/3,无键返回 0(配合 millis 做空闲超时)。
+static int gui_tryGetKey(lua_State *L)
+{
+    if (luaStopRequested())
+        luaL_error(L, "stopped by user (长按中键强制停止)");
+    lua_pushinteger(L, GUI::tryGetKey());
     return 1;
 }
 
@@ -109,14 +153,95 @@ static int gui_menu(lua_State *L)
     return 1;
 }
 
+static int gui_drawLBM(lua_State *L)
+{
+    int16_t x = (int16_t)luaL_checkinteger(L, 1);
+    int16_t y = (int16_t)luaL_checkinteger(L, 2);
+    const char *filename = luaL_checkstring(L, 3);
+    int color = (int)luaL_checkinteger(L, 4);
+    GUI::drawLBM(x, y, filename, (uint16_t)color);
+    return 0;
+}
+
+// 解码hex字符串(小端宽高头+像素)为位图,返回分配好的buf(需free)
+static uint8_t *_decodeHexBM(const char *hex, uint16_t *outW, uint16_t *outH)
+{
+    size_t len = strlen(hex);
+    uint16_t w = 0, h = 0;
+    for (int i = 0; i < 4; i++) {
+        char byteStr[3] = {hex[i * 2], hex[i * 2 + 1], 0};
+        uint8_t byte = (uint8_t)strtol(byteStr, NULL, 16);
+        if (i < 2) w |= byte << (i * 8);
+        else        h |= byte << ((i - 2) * 8);
+    }
+    *outW = w; *outH = h;
+    size_t expectedLen = ((w + 7) / 8) * h;
+    if (len < 8 || (len - 8) < expectedLen * 2) return NULL;
+    uint8_t *img = (uint8_t *)malloc(expectedLen);
+    if (!img) return NULL;
+    for (size_t i = 0; i < expectedLen; i++) {
+        char byteStr[3] = {hex[8 + i * 2], hex[8 + i * 2 + 1], 0};
+        img[i] = (uint8_t)strtol(byteStr, NULL, 16);
+    }
+    return img;
+}
+
+static int gui_drawBWBM(lua_State *L)
+{
+    int16_t x = (int16_t)luaL_checkinteger(L, 1);
+    int16_t y = (int16_t)luaL_checkinteger(L, 2);
+    int w = (int)luaL_checkinteger(L, 3);
+    int h = (int)luaL_checkinteger(L, 4);
+    const char *hex = luaL_checkstring(L, 5);
+    int color = (int)luaL_checkinteger(L, 6);
+    uint16_t bw = 0, bh = 0;
+    uint8_t *img = _decodeHexBM(hex, &bw, &bh);
+    if (!img) return luaL_error(L, "invalid hex data");
+    display.drawXBitmap(x, y, img, bw, bh, (uint16_t)color);
+    free(img);
+    return 0;
+}
+
+static int gui_draw3ColorBM(lua_State *L)
+{
+    int16_t x = (int16_t)luaL_checkinteger(L, 1);
+    int16_t y = (int16_t)luaL_checkinteger(L, 2);
+    // w/h 参数实际上可从hex头解析,这里不强制校验
+    const char *hexBw = luaL_checkstring(L, 5);
+    const char *hexRed = luaL_checkstring(L, 6);
+    // 空串 = 该层不绘制(纯红图黑白层留空,纯黑图红色层留空)
+    uint16_t bw = 0, bh = 0, rw = 0, rh = 0;
+    uint8_t *blackImg = (hexBw[0] ? _decodeHexBM(hexBw, &bw, &bh) : nullptr);
+    uint8_t *redImg = (hexRed[0] ? _decodeHexBM(hexRed, &rw, &rh) : nullptr);
+    if (!blackImg && !redImg)
+        return luaL_error(L, "invalid hex data");
+    if (blackImg)
+    {
+        display.drawXBitmap(x, y, blackImg, bw, bh, COL_NORMAL);
+        free(blackImg);
+    }
+    if (redImg)
+    {
+        display.drawXBitmap(x, y, redImg, rw, rh, COL_ALERT);
+        free(redImg);
+    }
+    return 0;
+}
+
 static const luaL_Reg _lualib[] = {
     {"waitLongPress", gui_waitLongPress},
+    {"waitKey", gui_waitKey},
+    {"waitButton", gui_waitButton},
+    {"tryGetKey", gui_tryGetKey},
     {"autoIndentDraw", gui_autoIndentDraw},
     {"drawWindowsWithTitle", gui_drawWindowsWithTitle},
     {"msgbox", gui_msgbox},
     {"msgbox_yn", gui_msgbox_yn},
     {"msgbox_number", gui_msgbox_number},
     {"menu", gui_menu},
+    {"drawLBM", gui_drawLBM},
+    {"drawBWBM", gui_drawBWBM},
+    {"draw3ColorBM", gui_draw3ColorBM},
     {NULL, NULL},
 };
 

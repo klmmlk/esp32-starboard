@@ -93,6 +93,7 @@ public:
         }
 
         Serial.printf("[LuaApp] 执行 %s\n", path);
+        luaSetCurrentApp(name); // 供 data.save/load 按 App 隔离
         int ret = lua_execute(L, path);
 
         if (ret != 0)

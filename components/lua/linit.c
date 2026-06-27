@@ -39,6 +39,8 @@ int luaopen_hal(lua_State *L);
 int luaopen_gui(lua_State *L);
 int luaopen_appmanager(lua_State *L);
 int luaopen_http(lua_State *L);
+int luaopen_data(lua_State *L);
+int luaopen_sys(lua_State *L);
 /*
 ** these libs are loaded by lua.c and are readily available to any Lua
 ** program
@@ -59,6 +61,8 @@ static const luaL_Reg loadedlibs[] = {
   {"gui", luaopen_gui},
   {"appManager", luaopen_appmanager},
   {"http", luaopen_http},
+  {"data", luaopen_data},
+  {"sys", luaopen_sys},
   {NULL, NULL}
 };
 

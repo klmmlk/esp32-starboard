@@ -38,6 +38,17 @@ namespace GUI
     // btn 取 PIN_BUTTONL / PIN_BUTTONC / PIN_BUTTONR。
     bool waitLongPress(int btn);
 
+    // 阻塞等待任意一个按键被按下,返回按键编号:1=左 2=中 3=右(用于 Lua 事件循环)。
+    // 内部复用按键事件队列(pollKeys + 消抖),无需先 initInput 也可工作。
+    int waitKey();
+
+    // 非阻塞取一个按键事件:有则返回 1=左 2=中 3=右,无事件返回 0。
+    // 供 Lua 层在轮询循环里配合停止标志使用(避免 waitKey 死等导致无法强停)。
+    int tryGetKey();
+
+    // 主动轮询按键(上升沿→事件队列),不返回。供主线程长 delay 期间调用避免丢键。
+    void pollInputs();
+
     // 自动换行绘制(游标式:依赖 u8g2 游标,调用前先 setCursor + setFont)。
     // 行高按 wqy16(16px)硬编码为 18;换字体需同步改。
     void autoIndentDraw(const char *str, int max_x, int start_x = 2);
@@ -65,6 +76,10 @@ namespace GUI
     //       长按中键回到首项。options 末项须 {nullptr,nullptr}。
     int menu(const char *title, const menu_item options[],
              int16_t ico_w = 8, int16_t ico_h = 8);
+
+    // 绘制 LBM 格式单色位图(xbm)文件(前景色由 color 指定,背景透明)。
+    // filename 若非绝对路径,自动补 /littlefs/ 前缀(LittleFS 挂载点)。
+    void drawLBM(int16_t x, int16_t y, const char *filename, uint16_t color);
 } // namespace GUI
 
 #endif // STARBOARD_GUI_H

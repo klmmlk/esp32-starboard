@@ -5,11 +5,14 @@
 //       全刷 firstPage/nextPage 替代 clearScreen+display;
 //       用 COL_NORMAL/COL_ALERT/COL_BG 替代硬编码黑白;
 //       无 drawLBM(LittleFS 未就绪);
-//       无 setFont 按 ID 选(本项目只用 wqy16)。
+//       setFont(fontName) 通过字体名选择 20 种字体(含中文 wqy12/wqy16)。
+
+#include "starboard_lua.h"
 
 #include "starboard_lua.h"
 #include <starboard_display.h>
 #include <Arduino.h>
+#include <string.h>
 
 extern "C" {
 #include "lua.h"
@@ -180,6 +183,52 @@ static int display_fillRoundRect(lua_State *L)
     return 0;
 }
 
+// ---------------------- 字体选择 ----------------------
+
+// 字体名 → 字体指针 映射表
+// 命名格式: [风格][宽x高], 风格 t=透明背景, B=粗体, n=窄体
+static const struct { const char *name; const uint8_t *font; } _font_map[] = {
+    // 中文（含 ASCII）
+    {"wqy12",       u8g2_font_wqy12_t_gb2312},
+    {"wqy16",       u8g2_font_wqy16_t_gb2312},
+    // 英文等宽 透明背景
+    {"4x6",         u8g2_font_4x6_tf},
+    {"5x7",         u8g2_font_5x7_tf},
+    {"5x8",         u8g2_font_5x8_tf},
+    {"6x10",        u8g2_font_6x10_tf},
+    {"6x12",        u8g2_font_6x12_tf},
+    {"6x13",        u8g2_font_6x13_tf},
+    {"7x13",        u8g2_font_7x13_tf},
+    {"7x14",        u8g2_font_7x14_tf},
+    {"8x13",        u8g2_font_8x13_tf},
+    {"9x15",        u8g2_font_9x15_tf},
+    {"9x18",        u8g2_font_9x18_tf},
+    {"10x20",       u8g2_font_10x20_tf},
+    // 粗体 (B)
+    {"bold6x13",    u8g2_font_6x13B_tf},
+    {"bold7x13",    u8g2_font_7x13B_tf},
+    {"bold8x13",    u8g2_font_8x13B_tf},
+    {"bold9x15",    u8g2_font_9x15B_tf},
+    // 窄体 (n = narrow)
+    {"narrow6x12",  u8g2_font_6x12_tn},
+    {"narrow6x13",  u8g2_font_6x13_tn},
+    {"narrow7x13",  u8g2_font_7x13_tn},
+    {"narrow8x13",  u8g2_font_8x13_tn},
+};
+static const int _font_map_count = sizeof(_font_map) / sizeof(_font_map[0]);
+
+static int display_setFont(lua_State *L)
+{
+    const char *name = luaL_checkstring(L, 1);
+    for (int i = 0; i < _font_map_count; i++) {
+        if (strcmp(name, _font_map[i].name) == 0) {
+            u8g2.setFont(_font_map[i].font);
+            return 0;
+        }
+    }
+    return luaL_error(L, "未知字体: %s", name);
+}
+
 // ---------------------- 文字输出 ----------------------
 
 static int display_setCursor(lua_State *L)
@@ -257,6 +306,7 @@ static const luaL_Reg _lualib[] = {
     {"endFrame", display_endFrame},
     {"clearScreen", display_clearScreen},
     {"fillScreen", display_fillScreen},
+    {"setFont", display_setFont},
     {"drawPixel", display_drawPixel},
     {"drawLine", display_drawLine},
     {"drawRect", display_drawRect},

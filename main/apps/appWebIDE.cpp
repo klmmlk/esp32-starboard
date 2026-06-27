@@ -76,7 +76,17 @@ public:
 
             // 主线程检测并执行待运行的 App(/api/run 设的标志)
             // 在主线程跑 Lua+display,避免和 webserver 线程冲突导致残影/重绘
-            pollRunRequest();
+            if (pollRunRequest())
+            {
+                // Lua 刚执行完。若被「中键长按3秒」强停,此时用户可能仍按住中键,
+                // 直接进入下方的中键退出检测会误触退出 → 先等中键释放再继续。
+                while (digitalRead(PIN_BUTTONC) == LOW)
+                    delay(20);
+                // Lua 若调了 gotoApp(设了 pendingSwitch),退出 Web IDE,让 appManager
+                // 主循环消费切换——否则 web IDE 占着主线程,切换请求永远不生效。
+                if (appManager.hasPendingSwitch())
+                    break;
+            }
 
             // 空闲超时:长时间无客户端访问才退出(有活跃连接永不超时)
             if (blocklyServerIdleTimeout(IDLE_TIMEOUT_SEC))
@@ -101,7 +111,10 @@ public:
             delay(50);
         }
 
-        appManager.goBack();
+        // 退出 Web IDE:若 Lua 已设 gotoApp 目标,则不 goBack(避免覆盖),让 run 切到目标 App;
+        // 否则正常返回上层。
+        if (!appManager.hasPendingSwitch())
+            appManager.goBack();
     }
 };
 

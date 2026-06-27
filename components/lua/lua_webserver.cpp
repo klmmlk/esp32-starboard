@@ -12,6 +12,7 @@
 #include <WebServer.h>
 #include <dirent.h>
 #include <starboard_hal.h>
+#include <starboard_config.h>   // PIN_BUTTONC
 #include "starboard_lua.h"
 
 static WebServer server(80);
@@ -24,6 +25,46 @@ static volatile bool pendingRun = false;
 static volatile bool isRunning = false;
 // 每次 handler 被调用(即有客户端请求)时更新活动时间,用于空闲超时判断
 static void updateActivity() { lastClientActivityMs = millis(); }
+
+// ---- 强制停止监控任务 ----
+// 独立任务:Lua 死循环会卡死主线程(web server 收不到请求),无法靠 HTTP 停止。
+// 此任务持续轮询中键,检测到长按 >=3 秒且 Lua 正在运行 → requestLuaStop(),
+// lua_execute 的 count hook 收到标志后 luaL_error 中断脚本,主线程恢复。
+static void killMonitorTask(void *)
+{
+    const unsigned long KILL_HOLD_MS = 3000;
+    bool counting = false;
+    unsigned long pressStart = 0;
+    for (;;)
+    {
+        if (isLuaRunning())
+        {
+            // BUTTON_ACTIVE_LOW:按下读 LOW
+            bool pressed = (digitalRead(PIN_BUTTONC) == LOW);
+            if (pressed)
+            {
+                if (!counting) { counting = true; pressStart = millis(); }
+                else if (millis() - pressStart >= KILL_HOLD_MS)
+                {
+                    Serial.println("[Web] 中键长按3秒,请求强制停止 Lua");
+                    requestLuaStop();
+                    counting = false;
+                    // 等 Lua 停止后继续(防止重复触发)
+                    while (isLuaRunning()) delay(50);
+                }
+            }
+            else
+            {
+                counting = false;
+            }
+        }
+        else
+        {
+            counting = false;
+        }
+        delay(50);
+    }
+}
 
 // HTML 页面:嵌入 Blockly + 定制工具箱
 static const char PAGE_BLOCKLY[] PROGMEM = R"=====(
@@ -42,7 +83,7 @@ static const char PAGE_BLOCKLY[] PROGMEM = R"=====(
   #blocklyDiv { height: 70%; width: 100%; }
   #codeDiv { height: 30%; width: 100%; }
   #codeDiv textarea { width: 98%; height: 80%; margin: 1%; font-family: monospace; }
-  #toolbar { padding: 8px; background: #eee; }
+  #toolbar { padding: 8px; background: #eee; position: sticky; top: 0; z-index: 100; border-bottom: 1px solid #ccc; }
   #toolbar button { margin-right: 8px; padding: 6px 16px; }
   #appList { margin: 0 8px; padding: 4px; }
 </style>
@@ -54,16 +95,60 @@ static const char PAGE_BLOCKLY[] PROGMEM = R"=====(
   <button onclick="flashCode()">&#128295; 烧录</button>
   <button onclick="runCode()">&#9654; 运行</button>
   <button onclick="deleteApp()">&#128465; 删除</button>
+  <button onclick="openImgDialogForSelected()" style="background:#9C27B0;color:white;border:none;">📷 上传图片</button>
   <select id="appList" onchange="onAppSelect()">
     <option value="">-- 新建 App --</option>
   </select>
   <span id="status" style="margin-left:16px;color:#666;"></span>
+</div>
+<!-- 图片上传模态对话框 -->
+<div id="imgDialog" style="display:none;position:fixed;z-index:9999;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,0.5);">
+  <div style="background:white;margin:60px auto;padding:20px;width:520px;border-radius:8px;text-align:center;">
+    <h3 style="margin:0 0 12px;">上传图片数据</h3>
+    <canvas id="imgPreview" style="max-width:400px;max-height:200px;border:1px solid #ccc;background:#f9f9f9;"></canvas>
+    <div style="margin-top:10px;text-align:left;">
+      <input type="file" id="imgFileInput" accept="image/*" style="display:none;">
+      <button onclick="document.getElementById('imgFileInput').click()">选择图片</button>
+      &nbsp;
+      模式:
+      <select id="imgMode" onchange="onImgModeChange()">
+        <option value="bw">黑白图片</option>
+        <option value="3color">三色图片(黑白+红色层)</option>
+      </select>
+    </div>
+    <div style="margin-top:10px;">
+      宽度 <input id="imgW" type="number" min="1" style="width:60px;"> px
+      &nbsp;高度 <input id="imgH" type="number" min="1" style="width:60px;"> px
+      &nbsp;<label><input id="imgLock" type="checkbox" checked> 锁定比例</label>
+    </div>
+    <div style="margin-top:10px;font-size:12px;color:#888;">
+      当前编辑积木: <span id="imgTargetInfo">未选择</span>
+      &nbsp;(请先在Blockly中选中一个<b>图片数据</b>积木,再点击上传)
+    </div>
+    <div style="margin-top:14px;">
+      <button onclick="closeImgDialog()">取消</button>
+      <button onclick="confirmImgDialog()" style="background:#4CAF50;color:white;border:none;padding:6px 20px;">确认并填入积木</button>
+    </div>
+  </div>
 </div>
 <div id="blocklyDiv"></div>
 <div id="codeDiv">
   <textarea id="code" placeholder="Lua code..."></textarea>
 </div>
 <script>
+// 同步获取 Lua App 列表(/api/list),用于"切换到App"积木下拉
+var _appOpts = [['(无App)','']];   // 占位:设备上没有 Lua App 时显示
+try {
+  var _xhr = new XMLHttpRequest();
+  _xhr.open('GET', '/api/list', false);   // 同步
+  _xhr.send();
+  if (_xhr.status == 200) {
+    var list = JSON.parse(_xhr.responseText);
+    if (list && list.length) {
+      _appOpts = list.map(function(n){ return [n, n]; });
+    }
+  }
+} catch(e) {}
 // 自定义工具箱(starboard API)
 const TOOLBOX = {
   'kind': 'categoryToolbox',
@@ -77,6 +162,10 @@ const TOOLBOX = {
       {'kind': 'block', 'type': 'display_setcursor'},
       {'kind': 'block', 'type': 'display_print'},
     ]},
+    {'kind': 'category', 'name': '图片', 'colour': '#9C27B0', 'contents': [
+      {'kind': 'block', 'type': 'image_bw'},
+      {'kind': 'block', 'type': 'image_3color'},
+    ]},
     {'kind': 'category', 'name': 'GUI', 'colour': '#2196F3', 'contents': [
       {'kind': 'block', 'type': 'gui_msgbox'},
       {'kind': 'block', 'type': 'gui_msgbox_yn'},
@@ -87,17 +176,30 @@ const TOOLBOX = {
       {'kind': 'block', 'type': 'appmanager_setwakeupsec'},
     ]},
     {'kind': 'category', 'name': '时间', 'colour': '#9C27B0', 'contents': [
-      {'kind': 'block', 'type': 'hal_gettime'},
-      {'kind': 'block', 'type': 'hal_timeinfo'},
+      {'kind': 'block', 'type': 'hal_timefield'},
+      {'kind': 'block', 'type': 'common_delay'},
+      {'kind': 'block', 'type': 'hal_millis'},
+    ]},
+    {'kind': 'category', 'name': '按键', 'colour': '#FF5722', 'contents': [
+      {'kind': 'block', 'type': 'gui_waitkey'},
+      {'kind': 'block', 'type': 'gui_waitlongpress'},
+      {'kind': 'block', 'type': 'gui_trygetkey'},
+    ]},
+    {'kind': 'category', 'name': '系统', 'colour': '#607D8B', 'contents': [
+      {'kind': 'block', 'type': 'sys_yield'},
     ]},
     {'kind': 'category', 'name': 'HTTP', 'colour': '#607D8B', 'contents': [
       {'kind': 'block', 'type': 'http_get'},
     ]},
+    {'kind': 'category', 'name': '数据', 'colour': '#0097A7', 'contents': [
+      {'kind': 'block', 'type': 'data_save'},
+      {'kind': 'block', 'type': 'data_load'},
+    ]},
     {'kind': 'category', 'name': '变量', 'colour': '#E91E63', 'contents': [
       {'kind': 'block', 'type': 'variables_get'},
       {'kind': 'block', 'type': 'variables_set'},
-      {'kind': 'button', 'text': '创建变量', 'callbackKey': 'create_var'},
     ]},
+    {'kind': 'category', 'name': '函数', 'custom': 'PROCEDURE', 'colour': '#995ba5'},
     {'kind': 'category', 'name': '逻辑', 'colour': '#5b80a5', 'contents': [
       {'kind': 'block', 'type': 'controls_if'},
       {'kind': 'block', 'type': 'logic_compare'},
@@ -158,21 +260,38 @@ const TOOLBOX = {
 
 // Blockly 自定义块定义
 Blockly.defineBlocksWithJsonArray([
-  {"type":"display_beginframe","message0":"开始绘制帧","previousStatement":null,"colour":120},
-  {"type":"display_endframe","message0":"结束绘制帧(刷屏)","previousStatement":null,"colour":120},
-  {"type":"display_clearscreen","message0":"清屏 %1","args0":[{"type":"field_dropdown","name":"COLOR","options":[["白色","1"],["黑色","0"],["红色","63488"]]}],"previousStatement":null,"colour":120},
-  {"type":"display_drawrect","message0":"画矩形 x:%1 y:%2 w:%3 h:%4 颜色:%5","args0":[{"type":"input_value","name":"X"},{"type":"input_value","name":"Y"},{"type":"input_value","name":"W","value":100},{"type":"input_value","name":"H","value":100},{"type":"field_dropdown","name":"COLOR","options":[["黑色","0"],["白色","1"],["红色","63488"]]}],"inputsInline":true,"previousStatement":null,"colour":120},
-  {"type":"display_fillcircle","message0":"填充圆 x:%1 y:%2 r:%3 颜色:%4","args0":[{"type":"input_value","name":"X"},{"type":"input_value","name":"Y"},{"type":"input_value","name":"R","value":30},{"type":"field_dropdown","name":"COLOR","options":[["黑色","0"],["白色","1"],["红色","63488"]]}],"inputsInline":true,"previousStatement":null,"colour":120},
-  {"type":"display_setcursor","message0":"设置光标 x:%1 y:%2","args0":[{"type":"input_value","name":"X"},{"type":"input_value","name":"Y"}],"inputsInline":true,"previousStatement":null,"colour":120},
-  {"type":"display_print","message0":"显示文字 %1","args0":[{"type":"input_value","name":"TEXT"}],"previousStatement":null,"colour":120},
+  {"type":"display_beginframe","message0":"开始绘制帧","previousStatement":null,"nextStatement":null,"colour":120},
+  {"type":"display_endframe","message0":"结束绘制帧(刷屏)","previousStatement":null,"nextStatement":null,"colour":120},
+  {"type":"display_clearscreen","message0":"清屏 %1","args0":[{"type":"field_dropdown","name":"COLOR","options":[["白色","1"],["黑色","0"],["红色","63488"]]}],"previousStatement":null,"nextStatement":null,"colour":120},
+  {"type":"display_drawrect","message0":"画矩形 x:%1 y:%2 w:%3 h:%4 颜色:%5","args0":[{"type":"input_value","name":"X"},{"type":"input_value","name":"Y"},{"type":"input_value","name":"W","value":100},{"type":"input_value","name":"H","value":100},{"type":"field_dropdown","name":"COLOR","options":[["黑色","0"],["白色","1"],["红色","63488"]]}],"inputsInline":true,"previousStatement":null,"nextStatement":null,"colour":120},
+  {"type":"display_fillcircle","message0":"填充圆 x:%1 y:%2 r:%3 颜色:%4","args0":[{"type":"input_value","name":"X"},{"type":"input_value","name":"Y"},{"type":"input_value","name":"R","value":30},{"type":"field_dropdown","name":"COLOR","options":[["黑色","0"],["白色","1"],["红色","63488"]]}],"inputsInline":true,"previousStatement":null,"nextStatement":null,"colour":120},
+  {"type":"display_setcursor","message0":"设置光标 x:%1 y:%2","args0":[{"type":"input_value","name":"X"},{"type":"input_value","name":"Y"}],"inputsInline":true,"previousStatement":null,"nextStatement":"statement","colour":120},
+  {"type":"display_print","message0":"显示文字 %1 字体 %2 颜色 %3","args0":[{"type":"input_value","name":"TEXT"},{"type":"field_dropdown","name":"FONT","options":[
+    ["中文 16px","wqy16"],["中文 12px","wqy12"],
+    ["英文 4x6","4x6"],["英文 5x7","5x7"],["英文 5x8","5x8"],
+    ["英文 6x10","6x10"],["英文 6x12","6x12"],["英文 6x13","6x13"],
+    ["英文 7x13","7x13"],["英文 7x14","7x14"],
+    ["英文 8x13","8x13"],["英文 9x15","9x15"],["英文 9x18","9x18"],["英文 10x20","10x20"],
+    ["粗体 6x13","bold6x13"],["粗体 7x13","bold7x13"],["粗体 8x13","bold8x13"],["粗体 9x15","bold9x15"],
+    ["窄体 6x12","narrow6x12"],["窄体 6x13","narrow6x13"],["窄体 7x13","narrow7x13"],["窄体 8x13","narrow8x13"],
+  ]},{"type":"field_dropdown","name":"COLOR","options":[["黑色","0"],["白色","1"],["红色","63488"]]}],"previousStatement":"statement","nextStatement":"statement","colour":120},
+  // --- 图片积木(上传图片:先选中积木,再点工具栏"📷 上传图片"按钮) ---
+  {"type":"image_bw","message0":"显示黑白图片 x:%1 y:%2","args0":[{"type":"input_value","name":"X"},{"type":"input_value","name":"Y"}],"message1":"宽:%1 高:%2 颜色:%3","args1":[{"type":"input_value","name":"W"},{"type":"input_value","name":"H"},{"type":"field_dropdown","name":"COLOR","options":[["黑色","0"],["白色","1"]]}],"message2":"黑白数据: %1","args2":[{"type":"input_value","name":"HEX"}],"previousStatement":null,"nextStatement":null,"colour":280,"inputsInline":false},
+  {"type":"image_3color","message0":"显示三色图片 x:%1 y:%2","args0":[{"type":"input_value","name":"X"},{"type":"input_value","name":"Y"}],"message1":"宽:%1 高:%2","args1":[{"type":"input_value","name":"W"},{"type":"input_value","name":"H"}],"message2":"黑白数据: %1","args2":[{"type":"input_value","name":"HEX_BW"}],"message3":"红色数据: %1","args3":[{"type":"input_value","name":"HEX_RED"}],"previousStatement":null,"nextStatement":null,"colour":280,"inputsInline":false},
   {"type":"gui_msgbox","message0":"消息框 标题:%1 内容:%2","args0":[{"type":"input_value","name":"TITLE"},{"type":"input_value","name":"MSG"}],"inputsInline":true,"previousStatement":null,"colour":210},
   {"type":"gui_msgbox_yn","message0":"确认框 标题:%1 内容:%2","args0":[{"type":"input_value","name":"TITLE"},{"type":"input_value","name":"MSG"}],"inputsInline":true,"previousStatement":null,"colour":210},
-  {"type":"appmanager_gotoapp","message0":"切换到App %1","args0":[{"type":"input_value","name":"NAME"}],"previousStatement":null,"colour":330},
   {"type":"appmanager_goback","message0":"返回上层App","previousStatement":null,"colour":330},
   {"type":"appmanager_setwakeupsec","message0":"设唤醒秒数 %1","args0":[{"type":"input_value","name":"SEC","value":60}],"previousStatement":null,"colour":330},
-  {"type":"hal_gettime","message0":"更新时间","previousStatement":null,"colour":290},
-  {"type":"hal_timeinfo","message0":"时间(year,month,day,hour,min,sec)","output":null,"colour":290},
+  {"type":"hal_timefield","message0":"获取时间 %1","args0":[{"type":"field_dropdown","name":"F","options":[["年","year"],["月","month"],["日","day"],["时","hour"],["分","min"],["秒","sec"],["星期","wday"]]}],"output":null,"colour":290,"tooltip":"读取指定时间字段(自动刷新)"},
+  {"type":"common_delay","message0":"延时(毫秒) %1","args0":[{"type":"input_value","name":"MS"}],"previousStatement":null,"nextStatement":null,"colour":290},
+  {"type":"hal_millis","message0":"开机毫秒数","output":null,"colour":290,"tooltip":"用于空闲超时判断"},
+  {"type":"gui_waitkey","message0":"等待按键","output":null,"colour":20,"tooltip":"阻塞等待任意按键被按下,返回 1=左键 2=中键 3=右键"},
+  {"type":"gui_waitlongpress","message0":"等待按键 %1 被按下","args0":[{"type":"field_dropdown","name":"BTN","options":[["左键","1"],["中键","2"],["右键","3"]]}],"previousStatement":null,"nextStatement":null,"colour":20,"tooltip":"阻塞,直到指定按键被按下(忽略其他键)"},
+  {"type":"gui_trygetkey","message0":"读取按键(无则返回0)","output":null,"colour":20,"tooltip":"非阻塞:有键返回1=左/2=中/3=右,无键返回0"},
+  {"type":"sys_yield","message0":"让出CPU(放权)","previousStatement":null,"nextStatement":null,"colour":100,"tooltip":"在循环里定期调用,让系统检测睡眠/超时"},
   {"type":"http_get","message0":"HTTP GET %1","args0":[{"type":"input_value","name":"URL"}],"output":null,"colour":180},
+  {"type":"data_save","message0":"保存数据 %1 为 %2","args0":[{"type":"input_value","name":"KEY"},{"type":"input_value","name":"VAL"}],"inputsInline":true,"previousStatement":null,"nextStatement":null,"colour":160,"tooltip":"持久化保存(重启不丢,按App隔离)"},
+  {"type":"data_load","message0":"读取数据 %1 默认 %2","args0":[{"type":"input_value","name":"KEY"},{"type":"input_value","name":"DEF"}],"inputsInline":true,"output":null,"colour":160,"tooltip":"读取持久化数据,无则返回默认值"},
 ]);
 
 // --- 各积木的 Lua 代码生成器 ---
@@ -201,7 +320,27 @@ Blockly.Lua.forBlock['display_setcursor'] = function(b) {
 };
 Blockly.Lua.forBlock['display_print'] = function(b) {
   var t = Blockly.Lua.valueToCode(b, 'TEXT', 0) || '""';
-  return 'display.u8g2Print(' + t + ')\n';
+  var font = b.getFieldValue('FONT');
+  var color = b.getFieldValue('COLOR');
+  return 'display.setFont("' + font + '")\ndisplay.setTextColor(' + color + ')\ndisplay.u8g2Print(' + t + ')\n';
+};
+Blockly.Lua.forBlock['image_bw'] = function(b) {
+  var x = Blockly.Lua.valueToCode(b, 'X', 0) || '0';
+  var y = Blockly.Lua.valueToCode(b, 'Y', 0) || '0';
+  var w = Blockly.Lua.valueToCode(b, 'W', 0) || '0';
+  var h = Blockly.Lua.valueToCode(b, 'H', 0) || '0';
+  var color = b.getFieldValue('COLOR');
+  var hex = Blockly.Lua.valueToCode(b, 'HEX', 0) || '""';
+  return 'gui.drawBWBM(' + x + ',' + y + ',' + w + ',' + h + ',' + hex + ',' + color + ')\n';
+};
+Blockly.Lua.forBlock['image_3color'] = function(b) {
+  var x = Blockly.Lua.valueToCode(b, 'X', 0) || '0';
+  var y = Blockly.Lua.valueToCode(b, 'Y', 0) || '0';
+  var w = Blockly.Lua.valueToCode(b, 'W', 0) || '0';
+  var h = Blockly.Lua.valueToCode(b, 'H', 0) || '0';
+  var hexBw = Blockly.Lua.valueToCode(b, 'HEX_BW', 0) || '""';
+  var hexRed = Blockly.Lua.valueToCode(b, 'HEX_RED', 0) || '""';
+  return 'gui.draw3ColorBM(' + x + ',' + y + ',' + w + ',' + h + ',' + hexBw + ',' + hexRed + ')\n';
 };
 Blockly.Lua.forBlock['gui_msgbox'] = function(b) {
   var title = Blockly.Lua.valueToCode(b, 'TITLE', 0) || '""';
@@ -213,22 +352,63 @@ Blockly.Lua.forBlock['gui_msgbox_yn'] = function(b) {
   var msg = Blockly.Lua.valueToCode(b, 'MSG', 0) || '""';
   return 'gui.msgbox_yn(' + title + ',' + msg + ')\n';
 };
+// 切换到App 积木:下拉用函数式 menuGenerator,每次点开都读最新 _appOpts
+// (新保存的 App 经 refreshAppList 更新 _appOpts 后,无需刷新页面即可在下拉看到)
+Blockly.Blocks['appmanager_gotoapp'] = {
+  init: function() {
+    this.appendDummyInput()
+        .appendField('切换到App')
+        .appendField(new Blockly.FieldDropdown(function(){ return _appOpts; }), 'NAME');
+    this.setPreviousStatement(true, null);
+    this.setColour(330);
+  }
+};
 Blockly.Lua.forBlock['appmanager_gotoapp'] = function(b) {
-  var n = Blockly.Lua.valueToCode(b, 'NAME', 0) || '""';
-  return 'appManager.gotoApp(' + n + ')\n';
+  var n = b.getFieldValue('NAME');
+  return 'appManager.gotoApp("' + n + '")\n';
 };
 Blockly.Lua.forBlock['appmanager_goback'] = function(b) { return 'appManager.goBack()\n'; };
 Blockly.Lua.forBlock['appmanager_setwakeupsec'] = function(b) {
   var s = Blockly.Lua.valueToCode(b, 'SEC', 0) || '60';
   return 'appManager.setWakeupSec(' + s + ')\n';
 };
-Blockly.Lua.forBlock['hal_gettime'] = function(b) { return 'hal.getTime()\n'; };
-Blockly.Lua.forBlock['hal_timeinfo'] = function(b) {
-  return ['hal.timeinfo()', 0];
+Blockly.Lua.forBlock['hal_timefield'] = function(b) {
+  var f = b.getFieldValue('F');
+  return ['hal.timeField("' + f + '")', 0];
+};
+Blockly.Lua.forBlock['hal_millis'] = function(b) {
+  return ['hal.millis()', 0];
+};
+Blockly.Lua.forBlock['common_delay'] = function(b) {
+  var ms = Blockly.Lua.valueToCode(b, 'MS', 0) || '1000';
+  return 'delay(' + ms + ')\n';
+};
+Blockly.Lua.forBlock['gui_waitlongpress'] = function(b) {
+  var btn = b.getFieldValue('BTN');
+  return 'gui.waitButton(' + btn + ')\n';
+};
+Blockly.Lua.forBlock['gui_trygetkey'] = function(b) {
+  return ['gui.tryGetKey()', 0];
+};
+Blockly.Lua.forBlock['sys_yield'] = function(b) {
+  return 'sys.yield()\n';
+};
+Blockly.Lua.forBlock['gui_waitkey'] = function(b) {
+  return ['gui.waitKey()', 0];
 };
 Blockly.Lua.forBlock['http_get'] = function(b) {
   var u = Blockly.Lua.valueToCode(b, 'URL', 0) || '""';
   return ['http.get(' + u + ')', 0];
+};
+Blockly.Lua.forBlock['data_save'] = function(b) {
+  var k = Blockly.Lua.valueToCode(b, 'KEY', 0) || '""';
+  var v = Blockly.Lua.valueToCode(b, 'VAL', 0) || '0';
+  return 'data.save(' + k + ',' + v + ')\n';
+};
+Blockly.Lua.forBlock['data_load'] = function(b) {
+  var k = Blockly.Lua.valueToCode(b, 'KEY', 0) || '""';
+  var d = Blockly.Lua.valueToCode(b, 'DEF', 0) || '0';
+  return ['data.load(' + k + ',' + d + ')', 0];
 };
 
 // --- 代码生成 ---
@@ -301,8 +481,24 @@ function flashCode() {
     code = 'display.beginFrame()\n' + code + '\ndisplay.endFrame()\n';
   }
   let appName = document.getElementById('appList').value;
-  if (!appName) { appName = prompt('App 名称:'); if (!appName) return; }
-  document.getElementById('appList').value = appName;
+  if (!appName) {
+    let appName = prompt('输入 App 内部名称(英文/拼音,作为目录名):');
+    if (!appName) return;
+    let appTitle = prompt('输入 App 显示名称(中文,列表中可见):', appName);
+    if (!appTitle) return;
+    document.getElementById('appList').value = appName;
+    setStatus('烧录中...');
+    fetch('/api/save', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'name=' + encodeURIComponent(appName) + '&title=' + encodeURIComponent(appTitle) + '&code=' + encodeURIComponent(code)
+    }).then(r => r.text()).then(msg => {
+      setStatus(msg);
+      refreshAppList();
+    });
+    return;
+  }
+  // 已选中的 App:直接烧录(用已保存的 title)
   setStatus('烧录中...');
   fetch('/api/save', {
     method: 'POST',
@@ -341,6 +537,10 @@ function refreshAppList() {
       if (n == cur) opt.selected = true;
       sel.appendChild(opt);
     });
+    // 同步更新"切换到App"积木下拉的数据源(下次点开积木下拉即生效)
+    _appOpts = (list && list.length)
+      ? list.map(function(n){ return [n, n]; })
+      : [['(无App)','']];
   });
 }
 
@@ -350,13 +550,210 @@ let workspace = Blockly.inject('blocklyDiv', {
   media: 'https://unpkg.com/blockly/media/',
   zoom: {controls: true, wheel: true}
 });
-// "创建变量"按钮:弹框输入变量名,注册到工作区
-workspace.registerButtonCallback('create_var', function(button) {
-  let name = prompt('变量名(英文):');
-  if (name) {
-    workspace.createVariable(name);
+// ========== 图片上传 ==========
+// 当前选中的图片积木(通过Blockly事件追踪)
+let _origImg = null, _origW = 0, _origH = 0;
+
+// 工具栏"上传图片"按钮:弹出上传对话框
+function openImgDialogForSelected() {
+  // 查找工作区里的图片积木
+  let imgBlocks = [];
+  let all = workspace.getAllBlocks();
+  for (let b of all) {
+    if (b.type === 'image_bw' || b.type === 'image_3color') imgBlocks.push(b);
   }
+  if (imgBlocks.length === 0) { alert('请先在工作区放置一个「显示黑白图片」或「显示三色图片」积木'); return; }
+  // 只有一个时直接用,多个时让用户选
+  if (imgBlocks.length > 1) {
+    let names = imgBlocks.map((b,i) => i+1 + ': ' + b.type).join('\n');
+    let sel = prompt('找到多个图片积木,请输入序号使用哪个(1-' + imgBlocks.length + '):\n' + names + '\n或者直接在工作区删除多余的,只留一个');
+    if (!sel) return;
+    let idx = parseInt(sel) - 1;
+    if (idx < 0 || idx >= imgBlocks.length) { alert('无效选择'); return; }
+    _imgUploadBlock = imgBlocks[idx];
+  } else {
+    _imgUploadBlock = imgBlocks[0];
+  }
+  let type = _imgUploadBlock.type;
+  let mode = document.getElementById('imgMode').value;
+  if (type === 'image_bw') {
+    _imgUploadField = 'HEX';
+  } else {
+    _imgUploadField = (mode === '3color') ? 'HEX_RED' : 'HEX_BW';
+  }
+  document.getElementById('imgTargetInfo').textContent = type + ' / ' + _imgUploadField;
+  document.getElementById('imgW').value = '';
+  document.getElementById('imgH').value = '';
+  document.getElementById('imgLock').checked = true;
+  _origImg = null;
+  let cv = document.getElementById('imgPreview');
+  cv.width = 400; cv.height = 200;
+  cv.getContext('2d').clearRect(0, 0, 400, 200);
+  document.getElementById('imgDialog').style.display = 'block';
+}
+
+function onImgModeChange() {
+  if (!_imgUploadBlock) return;
+  let mode = document.getElementById('imgMode').value;
+  _imgUploadField = (_imgUploadBlock.type === 'image_bw') ? 'HEX' :
+                   (mode === '3color') ? 'HEX_RED' : 'HEX_BW';
+  document.getElementById('imgTargetInfo').textContent = _imgUploadBlock.type + ' / ' + _imgUploadField;
+}
+
+function closeImgDialog() {
+  document.getElementById('imgDialog').style.display = 'none';
+  _imgUploadBlock = null;
+}
+
+function previewScaled() {
+  if (!_origImg) return;
+  let w = parseInt(document.getElementById('imgW').value) || 0;
+  let h = parseInt(document.getElementById('imgH').value) || 0;
+  if (w <= 0 || h <= 0) return;
+  let cv = document.getElementById('imgPreview');
+  cv.width = w; cv.height = h;
+  cv.getContext('2d').drawImage(_origImg, 0, 0, w, h);
+}
+
+// 像素颜色判断:R 主导且足够鲜艳才算红(避免白/灰/黑被 HSV 色相0误判为红)
+function _isRed(r, g, b) {
+  return (r > 120 && (r - g) > 40 && (r - b) > 40);
+}
+
+function toLbmHex(canvas, w, h, mode) {
+  let ctx = canvas.getContext('2d');
+  let imgData = ctx.getImageData(0, 0, w, h).data;
+  let rowBytes = Math.ceil(w / 8);
+  let hexRows = [];
+  for (let y = 0; y < h; y++) {
+    let rowBytesArr = [];
+    for (let byteIdx = 0; byteIdx < rowBytes; byteIdx++) {
+      let byte = 0;
+      for (let bit = 0; bit < 8; bit++) {
+        let px = byteIdx * 8 + bit;
+        if (px >= w) continue;
+        let idx = (y * w + px) * 4;
+        let r = imgData[idx], g = imgData[idx + 1], b = imgData[idx + 2];
+        let gray = r * 0.299 + g * 0.587 + b * 0.114;
+        let bitVal = 0;
+        if (mode === 'bw') {
+          // 黑白图:暗像素=1(红也当黑,纯黑白屏语义)
+          bitVal = (gray < 128) ? 1 : 0;
+        } else if (mode === 'black') {
+          // 三色图黑白层:暗且非红=1(红色留给红色层)
+          bitVal = (gray < 128 && !_isRed(r, g, b)) ? 1 : 0;
+        } else { // 'red' 红色层
+          bitVal = _isRed(r, g, b) ? 1 : 0;
+        }
+        byte |= (bitVal << bit);
+      }
+      rowBytesArr.push(byte);
+    }
+    hexRows.push(rowBytesArr.map(function(b){return b.toString(16).padStart(2,'0').toUpperCase();}).join(''));
+  }
+  let header = (w & 0xFF).toString(16).padStart(2,'0') + ((w >> 8) & 0xFF).toString(16).padStart(2,'0') +
+               (h & 0xFF).toString(16).padStart(2,'0') + ((h >> 8) & 0xFF).toString(16).padStart(2,'0');
+  return header + hexRows.join('');
+}
+
+// 把hex填入积木的指定字段(创建文本块并连接)
+function _fillImgField(fieldName, hexStr) {
+  if (!hexStr) return;
+  let textBlock = workspace.newBlock('text');
+  textBlock.initSvg();
+  textBlock.render();
+  textBlock.setFieldValue(hexStr, 'TEXT');
+  let input = _imgUploadBlock.getInput(fieldName);
+  if (input && input.connection) {
+    input.connection.connect(textBlock.outputConnection);
+  }
+}
+
+function confirmImgDialog() {
+  if (!_imgUploadBlock) { alert('未选中积木'); return; }
+  let w = parseInt(document.getElementById('imgW').value) || 0;
+  let h = parseInt(document.getElementById('imgH').value) || 0;
+  if (w <= 0 || h <= 0) { alert('请输入有效尺寸'); return; }
+  let mode = document.getElementById('imgMode').value;
+  let cv = document.getElementById('imgPreview');
+  let type = _imgUploadBlock.type;
+  if (type === 'image_3color') {
+    // 三色图:一张图同时生成黑白层(黑色像素)和红色层(红色像素)
+    _fillImgField('HEX_BW', toLbmHex(cv, w, h, 'black'));
+    _fillImgField('HEX_RED', toLbmHex(cv, w, h, 'red'));
+  } else {
+    // 黑白图:单层(红当黑)
+    _fillImgField('HEX', toLbmHex(cv, w, h, 'bw'));
+  }
+  closeImgDialog();
+  setStatus('图片已填入 ' + w + 'x' + h + 'px' + (type === 'image_3color' ? '(黑白+红色两层)' : ''));
+}
+
+document.getElementById('imgFileInput').onchange = function(e) {
+  let file = e.target.files[0];
+  if (!file) return;
+  let reader = new FileReader();
+  reader.onload = function(ev) {
+    let img = new Image();
+    img.onload = function() {
+      _origImg = img;
+      _origW = img.width; _origH = img.height;
+      let scale = Math.min(400 / _origW, 200 / _origH, 1);
+      let w = Math.round(_origW * scale);
+      let h = Math.round(_origH * scale);
+      document.getElementById('imgW').value = w;
+      document.getElementById('imgH').value = h;
+      previewScaled();
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+  this.value = '';
+};
+
+document.getElementById('imgW').oninput = function() {
+  let lock = document.getElementById('imgLock').checked;
+  let w = parseInt(this.value) || 0;
+  if (lock && w > 0 && _origW > 0) {
+    let h = Math.round(w * _origH / _origW);
+    document.getElementById('imgH').value = h;
+  }
+  previewScaled();
+};
+document.getElementById('imgH').oninput = function() {
+  let lock = document.getElementById('imgLock').checked;
+  let h = parseInt(this.value) || 0;
+  if (lock && h > 0 && _origH > 0) {
+    let w = Math.round(h * _origW / _origH);
+    document.getElementById('imgW').value = w;
+  }
+  previewScaled();
+};
+// ---- 中键(滚轮按下)拖动平移画布;阻止 Blockly 把中键当积木操作 ----
+let _panning = false, _panX = 0, _panY = 0;
+document.addEventListener('mousedown', function(e) {
+  if (e.button !== 1) return;            // 只处理中键
+  if (!e.target.closest('#blocklyDiv')) return;  // 仅画布区域
+  _panning = true;
+  _panX = e.clientX; _panY = e.clientY;
+  e.preventDefault();                    // 阻止浏览器自动滚动
+  e.stopPropagation();                   // 阻止 Blockly 拖积木
+}, true);                                // 捕获阶段,抢在 Blockly 之前
+window.addEventListener('mousemove', function(e) {
+  if (!_panning) return;
+  let dx = e.clientX - _panX, dy = e.clientY - _panY;
+  // Blockly scroll:鼠标右移看右侧内容 → scrollX 增大
+  workspace.scroll(workspace.scrollX + dx, workspace.scrollY + dy);
+  _panX = e.clientX; _panY = e.clientY;
 });
+window.addEventListener('mouseup', function(e) {
+  if (e.button === 1) { _panning = false; e.preventDefault(); }
+});
+// 屏蔽中键的 auxclick(某些浏览器的自动滚动光标)
+document.getElementById('blocklyDiv').addEventListener('auxclick', function(e) {
+  if (e.button === 1) e.preventDefault();
+});
+
 workspace.addChangeListener(generateCode);
 refreshAppList();
 generateCode();
@@ -438,17 +835,19 @@ static void handleApiSave()
     }
     String name = server.arg("name");
     String code = server.arg("code");
+    // title 可选,未提供时用 name 兜底
+    String title = server.hasArg("title") ? server.arg("title") : name;
 
     // 创建目录
     char dirPath[128];
     snprintf(dirPath, sizeof(dirPath), "/littlefs/apps/%s", name.c_str());
     mkdir(dirPath, 0755);
 
-    // 写 conf.lua
+    // 写 conf.lua: title 供 LuaAppWrapper 读取显示名
     char confPath[128];
     snprintf(confPath, sizeof(confPath), "/littlefs/apps/%s/conf.lua", name.c_str());
     FILE *f = fopen(confPath, "w");
-    if (f) { fprintf(f, "title = \"%s\"\n", name.c_str()); fclose(f); }
+    if (f) { fprintf(f, "title = \"%s\"\n", title.c_str()); fclose(f); }
 
     // 写 main.lua
     char luaPath[128];
@@ -462,7 +861,7 @@ static void handleApiSave()
     fprintf(f, "%s", code.c_str());
     fclose(f);
 
-    Serial.printf("[Web] 已保存 App: %s (%u bytes)\n", name.c_str(), code.length());
+    Serial.printf("[Web] 已保存 App: %s → \"%s\" (%u bytes)\n", name.c_str(), title.c_str(), code.length());
     server.send(200, "text/plain", "OK: " + name);
 }
 
@@ -553,6 +952,8 @@ void startBlocklyServer()
     server.begin();
     lastClientActivityMs = millis();
     serverStarted = true;
+    // 启动强制停止监控任务(独立任务,Lua 死循环时仍能响应中键长按)
+    xTaskCreate(killMonitorTask, "lua_kill", 3072, nullptr, 5, nullptr);
     Serial.printf("[Web] Blockly 服务器已启动(http://%s/)\n", hal.wifiIp.c_str());
 }
 
@@ -586,6 +987,7 @@ bool pollRunRequest()
     // 取走待处理的 App 名并清除标志
     String appName = pendingRunApp;
     pendingRun = false;
+    luaSetCurrentApp(appName.c_str()); // 供 data.save/load 按 App 隔离
 
     char path[128];
     snprintf(path, sizeof(path), "/littlefs/apps/%s/main.lua", appName.c_str());

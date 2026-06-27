@@ -44,9 +44,10 @@ static int hal_now(lua_State *L)
 
 static int hal_timeinfo(lua_State *L)
 {
-    // 返回 7 个值: year, month(0-based), day, wday(0=Sun), hour, min, sec
+    hal.getTime(); // 先刷新,保证读到最新时间
+    // 返回 7 个值: year, month(1-based), day, wday(0=Sun), hour, min, sec
     lua_pushinteger(L, hal.timeinfo.tm_year + 1900);
-    lua_pushinteger(L, hal.timeinfo.tm_mon);
+    lua_pushinteger(L, hal.timeinfo.tm_mon + 1);
     lua_pushinteger(L, hal.timeinfo.tm_mday);
     lua_pushinteger(L, hal.timeinfo.tm_wday);
     lua_pushinteger(L, hal.timeinfo.tm_hour);
@@ -55,10 +56,34 @@ static int hal_timeinfo(lua_State *L)
     return 7;
 }
 
+// 按字段取时间(field: year/month/day/hour/min/sec/wday),内部自动刷新
+static int hal_timeField(lua_State *L)
+{
+    hal.getTime();
+    const char *f = luaL_checkstring(L, 1);
+    int v = 0;
+    if (strcmp(f, "year") == 0) v = hal.timeinfo.tm_year + 1900;
+    else if (strcmp(f, "month") == 0) v = hal.timeinfo.tm_mon + 1;
+    else if (strcmp(f, "day") == 0) v = hal.timeinfo.tm_mday;
+    else if (strcmp(f, "hour") == 0) v = hal.timeinfo.tm_hour;
+    else if (strcmp(f, "min") == 0) v = hal.timeinfo.tm_min;
+    else if (strcmp(f, "sec") == 0) v = hal.timeinfo.tm_sec;
+    else if (strcmp(f, "wday") == 0) v = hal.timeinfo.tm_wday;
+    lua_pushinteger(L, v);
+    return 1;
+}
+
 static int hal_getTime(lua_State *L)
 {
     hal.getTime();
     return 0;
+}
+
+// 开机以来的毫秒数(用于空闲超时判断)
+static int hal_millis(lua_State *L)
+{
+    lua_pushinteger(L, (lua_Integer)millis());
+    return 1;
 }
 
 // ---------------------- 系统控制 ----------------------
@@ -77,7 +102,9 @@ static const luaL_Reg _lualib[] = {
     {"isCharging", hal_isCharging},
     {"now", hal_now},
     {"timeinfo", hal_timeinfo},
+    {"timeField", hal_timeField},
     {"getTime", hal_getTime},
+    {"millis", hal_millis},
     {"reboot", hal_reboot},
     {NULL, NULL},
 };

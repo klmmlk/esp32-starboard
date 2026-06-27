@@ -142,6 +142,27 @@ namespace GUI
         return true;
     }
 
+    int waitKey()
+    {
+        // 阻塞等任意按键事件(复用 GUI 内部按键队列 + 消抖),返回 1/2/3。
+        int pin = waitKeyEvent();
+        if (pin == PIN_BUTTONC) return 2;
+        if (pin == PIN_BUTTONR) return 3;
+        return 1; // PIN_BUTTONL
+    }
+
+    int tryGetKey()
+    {
+        pollKeys();
+        int pin = popKey();
+        if (pin < 0) return 0;
+        if (pin == PIN_BUTTONC) return 2;
+        if (pin == PIN_BUTTONR) return 3;
+        return 1;
+    }
+
+    void pollInputs() { pollKeys(); }
+
     void autoIndentDraw(const char *str, int max_x, int start_x)
     {
         while (*str)
@@ -471,5 +492,41 @@ namespace GUI
         waitAllReleased();
         hal.pauseButtons = false;
         return cv;
+    }
+    void drawLBM(int16_t x, int16_t y, const char *filename, uint16_t color)
+    {
+        // 自动补 /littlefs/ 前缀(LittleFS 挂载点)
+        const char *path = (filename[0] == '/') ? filename : nullptr;
+        char fullPath[128];
+        if (!path)
+        {
+            snprintf(fullPath, sizeof(fullPath), "/littlefs/%s", filename);
+            path = fullPath;
+        }
+        FILE *fp = fopen(path, "rb");
+        if (!fp)
+        {
+            Serial.printf("LBM file not found: %s\n", path);
+            return;
+        }
+        uint16_t w, h;
+        fread(&w, 2, 1, fp);
+        fread(&h, 2, 1, fp);
+        size_t imgsize;
+        uint16_t tmp = w / 8;
+        if (w % 8 != 0)
+            tmp++;
+        imgsize = tmp * h;
+        uint8_t *img = (uint8_t *)malloc(imgsize);
+        if (!img)
+        {
+            Serial.printf("LBM malloc failed\n");
+            fclose(fp);
+            return;
+        }
+        fread(img, 1, imgsize, fp);
+        fclose(fp);
+        display.drawXBitmap(x, y, img, w, h, color);
+        free(img);
     }
 } // namespace GUI

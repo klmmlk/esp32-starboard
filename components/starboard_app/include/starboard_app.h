@@ -1,6 +1,8 @@
 #ifndef STARBOARD_APP_H
 #define STARBOARD_APP_H
 
+#include <starboard_gui.h>  // menu_item 结构体
+
 // =============================================================================
 // starboard_app —— 应用框架(AppBase + AppManager)
 //
@@ -76,6 +78,16 @@ public:
     // ------------------------- 查询 -------------------------
     AppBase *currentApp() const { return current; }
     AppBase *homeApp() const { return home; }
+    // 是否有待切换的 App(Lua gotoApp 设置,run 循环消费)。web IDE 据此判断是否退出。
+    bool hasPendingSwitch() const { return pendingSwitch != nullptr; }
+    /**
+     * 收集 showInList 的 App 到 items 数组,供设置界面做"默认应用"选择器。
+     * @param items 菜单数组(调用方分配,大小 MAX_APPS+1)
+     * @param apps  AppBase* 数组(同调用方分配,大小 MAX_APPS)
+     * @param max   最大条目数
+     * @return 实际填充的 App 数量
+     */
+    int getAppList(menu_item *items, AppBase **apps, int max);
 
 private:
     static constexpr int MAX_APPS = 16;

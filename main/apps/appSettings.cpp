@@ -17,6 +17,8 @@ namespace
 constexpr const char *KEY_SCREEN_ORIENT = "screen_orient";
 // NTP 同步间隔(分钟)。0=禁用自动同步,仅 OOBE 首次对时。实际定时同步消费留到网络/天气阶段。
 constexpr const char *KEY_NTP_INTERVAL = "ntp_interval";
+// 默认应用:存 App 的 name(identifier),空=跟随系统默认(clock 或 OOBE)。
+constexpr const char *KEY_DEFAULT_APP = "default_app";
 
 class AppSettings : public AppBase
 {
@@ -39,6 +41,7 @@ public:
                 {nullptr, "NTP 间隔(存配置)"},
                 {nullptr, "重新配网"},
                 {nullptr, "无操作超时"},
+                {nullptr, "默认应用"},
                 {nullptr, "OTA 升级"},
                 {nullptr, "关于"},
                 {nullptr, "返回"},
@@ -51,8 +54,9 @@ public:
             case 1: editNtpInterval(); break;
             case 2: wifiReprov(); break;
             case 3: editSleepTimeout(); break;
-            case 4: return otaUpgrade();  // gotoApp 设 pendingSwitch,return 让 run() 消费
-            case 5: aboutBox(); break;
+            case 4: editDefaultApp(); break;
+            case 5: return otaUpgrade();  // gotoApp 设 pendingSwitch,return 让 run() 消费
+            case 6: aboutBox(); break;
             default: appManager.goBack(); return; // "返回" 或异常索引 → 回上层
             }
         }
@@ -99,6 +103,49 @@ private:
         char buf[128];
         snprintf(buf, sizeof(buf), "已设为 %d 秒\n10 秒后屏幕休眠\n超时后芯片深睡", v);
         GUI::msgbox("无操作超时", buf);
+    }
+
+    void editDefaultApp()
+    {
+        // 构建菜单:首项"无(跟随系统)" + 所有 showInList 的 App(AppManager MAX_APPS=16)
+        menu_item items[18]; // [0]="无" + [1..16]=App + [17]=哨兵
+        AppBase *apps[16];
+        int n = appManager.getAppList(items + 1, apps, 16);
+        // 首项 = 无(跟随系统默认)
+        items[0].icon = nullptr;
+        items[0].title = "无(跟随系统)";
+        // 末尾哨兵
+        items[n + 1].icon = nullptr;
+        items[n + 1].title = nullptr;
+
+        // 读当前默认应用,找出当前选中的索引
+        String cur = hal.pref.getString(KEY_DEFAULT_APP, "");
+        int curSel = 0; // 默认"无"
+        for (int i = 0; i < n; ++i)
+        {
+            if (cur == apps[i]->name)
+            {
+                curSel = i + 1; // +1 因为第0项是"无"
+                break;
+            }
+        }
+
+        int sel = GUI::menu("默认应用", items);
+        if (sel < 0)
+            return;
+        if (sel == 0)
+        {
+            hal.pref.remove(KEY_DEFAULT_APP);
+            GUI::msgbox("默认应用", "已清除\n下次启动跟随系统默认");
+        }
+        else
+        {
+            int idx = sel - 1;
+            hal.pref.putString(KEY_DEFAULT_APP, apps[idx]->name);
+            char buf[128];
+            snprintf(buf, sizeof(buf), "已设为: %s", apps[idx]->title);
+            GUI::msgbox("默认应用", buf);
+        }
     }
 
     void wifiReprov()

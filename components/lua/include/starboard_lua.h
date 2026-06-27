@@ -45,6 +45,22 @@ int lua_execute(lua_State *L, const char *filename);
 /** 关闭 Lua 状态。 */
 void closeLua(lua_State *L);
 
+/**
+ * 请求停止正在运行的 Lua 脚本(由独立监控任务在硬件按键长按时调用)。
+ * lua_execute 内部的 count hook 检测到此标志后用 luaL_error 中断脚本。
+ */
+void requestLuaStop();
+
+/** Lua 脚本当前是否正在执行(lua_execute 期间为 true)。 */
+bool isLuaRunning();
+
+/** 是否收到停止请求(供阻塞型 C 绑定如 gui.waitKey 在等待循环里主动检查)。 */
+bool luaStopRequested();
+
+/** 设置/获取当前运行的 Lua App 名(数据持久化按 App 名隔离:data.kv 路径用)。 */
+void luaSetCurrentApp(const char *name);
+const char *luaGetCurrentApp();
+
 #ifdef __cplusplus
 }
 #endif

@@ -17,7 +17,8 @@
       "Bash(git commit -m '阶段5b Step1-2:LittleFS 挂载 + 文件 Lua 执行 *)",
       "Bash(C:/Espressif/tools/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/bin/xtensa-esp32s3-elf-nm d:/idf/build/esp-idf/espressif__arduino-esp32/CMakeFiles/__idf_espressif__arduino-esp32.dir/libraries/NetworkClientSecure/src/ssl_client.cpp.obj)",
       "Bash(find d:/idf/managed_components -name \"GxEPD2_NotPagedExample*\" 2>/dev/null; find / -name \"GxEPD2_NotPagedExample*\" 2>/dev/null | head -3)",
-      "Bash(git commit -m 'fix:Web IDE TCP 重传去重 + 删除内置测试 App *)"
+      "Bash(git commit -m 'fix:Web IDE TCP 重传去重 + 删除内置测试 App *)",
+      "Bash(git commit -m 'feat: Web IDE 字体选择 + 显示名称 + 默认应用 + sys.yield *)"
     ]
   }
 }

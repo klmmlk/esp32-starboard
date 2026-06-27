@@ -37,9 +37,17 @@ AppBase *AppManager::findByName(const char *name)
 void AppManager::begin()
 {
     inited = true;
+    // 优先读用户设置的默认应用(NVS "default_app"),若存在则直接用作 home
+    String defaultAppName = hal.pref.getString("default_app", "");
+    if (!defaultAppName.isEmpty())
+    {
+        AppBase *def = findByName(defaultAppName.c_str());
+        if (def)
+            home = def;
+    }
     // 未完成 OOBE 引导(pref "oobe" < 3)→ home = 引导 App,开机即进引导;
     // 否则保持 registerBuiltinApps 设的 home(主时钟)。
-    if (hal.pref.getInt("oobe", 0) < 3)
+    else if (hal.pref.getInt("oobe", 0) < 3)
     {
         AppBase *oobe = findByName("oobe");
         if (oobe)
@@ -113,6 +121,24 @@ void AppManager::openSelector()
     if (sel >= 0 && sel < n)
         gotoApp(apps[sel]);
     // menu 无"取消"(中键短按即确认),总会返回一个索引;sel<0 仅在 options 为空时。
+}
+
+int AppManager::getAppList(menu_item *items, AppBase **apps, int max)
+{
+    int n = 0;
+    for (int i = 0; i < appCount && n < max; ++i)
+    {
+        if (appList[i]->showInList)
+        {
+            apps[n] = appList[i];
+            items[n].icon = appList[i]->image;
+            items[n].title = appList[i]->title;
+            ++n;
+        }
+    }
+    items[n].icon = nullptr;
+    items[n].title = nullptr;
+    return n;
 }
 
 void AppManager::run()
