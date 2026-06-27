@@ -1,10 +1,7 @@
 // lua_app_wrapper —— 扫描 /littlefs/apps/,包装为 AppBase
 //
-// 阶段5b:简易版,不引入 LuaAppWrapper 完整生命周期(lightsleep/wakeup等),
-//         只有 setup() 执行一次 main.lua,返回后 goBack。
-//
-// LiClock 完整生命周期(conf.lua + main.lua + lightsleep/wakeup/deepsleep)
-// 待阶段5c 补全。
+// 方案B: LuaApp::setup() 不阻塞,创建后台 FreeRTOS 任务跑 Lua。
+// Lua 任务结束后通知主任务,然后 appManager.goBack() 切回上一个 App。
 
 #include "lua_app_wrapper.h"
 #include <starboard_app.h>
@@ -13,11 +10,24 @@
 #include <dirent.h>
 #include <string.h>
 #include <vector>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 namespace
 {
 
 constexpr const char *APPS_DIR = "/littlefs/apps";
+
+// Lua 任务栈大小(Lua 运行时需要足够的栈空间)
+constexpr uint32_t LUA_TASK_STACK = 8192;
+
+// Lua 后台任务参数
+struct LuaTaskParam {
+    char appName[64];
+    char luaPath[128];
+    TaskHandle_t notifyTask;  // 通知目标任务(即 AppManager.run 所在任务)
+    bool *timeoutFlag;        // 指向调用方的超时标志,超时后置位防止 goBack 竞态
+};
 
 // 读取文件内容到堆(调用者 free)
 static char *readFile(const char *path)
@@ -49,9 +59,61 @@ static char *readFile(const char *path)
     return buf;
 }
 
+// Lua 后台任务函数
+// 跑完 lua_execute 后通知主任务,然后 appManager.goBack() 切回上一个 App
+static void luaAppTask(void *param)
+{
+    LuaTaskParam *p = (LuaTaskParam *)param;
+    const char *luaPath = p->luaPath;
+    TaskHandle_t notifyTask = p->notifyTask;
+
+    Serial.printf("[LuaApp] 任务开始: %s\n", p->appName);
+    lua_State *L = openLua();
+    if (!L)
+    {
+        Serial.printf("[LuaApp] openLua 失败\n");
+        // 通知主 setup() 等待结束,自己进 goBack
+        if (!p->timeoutFlag || !(*p->timeoutFlag))
+            appManager.goBack();
+        xTaskNotifyGive(notifyTask);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    Serial.printf("[LuaApp] 执行 %s\n", luaPath);
+    luaSetCurrentApp(p->appName);
+    Serial.printf("[LuaApp] lua_execute 开始\n");
+    int ret = lua_execute(L, luaPath);
+    Serial.printf("[LuaApp] lua_execute 返回 ret=%d\n", ret);
+
+    if (ret != 0)
+    {
+        Serial.printf("[LuaApp] %s: 执行错误\n", p->appName);
+    }
+
+    Serial.printf("[LuaApp] 关闭 Lua 状态机\n");
+    closeLua(L);
+
+    // Lua 执行完毕:通知等待中的 setup(),然后切换回上一个 App
+    // 注意:如果 setup() 已超时(timedOut=true),不再调 goBack(),避免竞态
+    if (!p->timeoutFlag || !(*p->timeoutFlag))
+    {
+        Serial.printf("[LuaApp] 正常结束,goBack\n");
+        appManager.goBack();
+    }
+    else
+    {
+        Serial.printf("[LuaApp] 已超时,跳过 goBack\n");
+    }
+    xTaskNotifyGive(notifyTask);
+
+    // 任务自我删除
+    vTaskDelete(NULL);
+}
+
 class LuaApp : public AppBase
 {
-public:
+	public:
     LuaApp(const char *dirName, const char *appTitle)
     {
         // 目录名即 App name(唯一标识)
@@ -79,33 +141,56 @@ public:
     void setup() override
     {
         // 构建 main.lua 路径
-        char path[128];
-        snprintf(path, sizeof(path), "%s/%s/main.lua", APPS_DIR,
+        char luaPath[128];
+        snprintf(luaPath, sizeof(luaPath), "%s/%s/main.lua", APPS_DIR,
                  name ? name : "");
 
-        // 打开 Lua 并执行 main.lua
-        lua_State *L = openLua();
-        if (!L)
+        // 超时标志:setup() 超时后置位,luaAppTask 看到后不再调 goBack()
+        bool timedOut = false;
+
+        // 准备任务参数
+        LuaTaskParam *param = new LuaTaskParam();
+        strncpy(param->appName, name, sizeof(param->appName) - 1);
+        param->appName[sizeof(param->appName) - 1] = '\0';
+        strncpy(param->luaPath, luaPath, sizeof(param->luaPath) - 1);
+        param->luaPath[sizeof(param->luaPath) - 1] = '\0';
+        param->notifyTask = xTaskGetCurrentTaskHandle();
+        param->timeoutFlag = &timedOut;
+
+        // 创建后台任务跑 Lua(独立栈,不阻塞 AppManager 主循环)
+        TaskHandle_t luaTaskHandle = NULL;
+        BaseType_t ok = xTaskCreate(
+            luaAppTask,
+            "LuaApp",
+            LUA_TASK_STACK / sizeof(StackType_t),
+            param,
+            2,  // 优先级稍低于 main 任务
+            &luaTaskHandle);
+
+        if (ok != pdTRUE)
         {
-            Serial.printf("[LuaApp] %s: openLua 失败\n", name);
+            Serial.printf("[LuaApp] %s: 任务创建失败\n", name);
+            delete param;
             appManager.goBack();
             return;
         }
 
-        Serial.printf("[LuaApp] 执行 %s\n", path);
-        luaSetCurrentApp(name); // 供 data.save/load 按 App 隔离
-        int ret = lua_execute(L, path);
-
-        if (ret != 0)
+        // 等待 Lua 任务执行完毕(最多 30 秒超时,防止 Lua 脚本卡死导致永不休眠)
+        // 通知来自 luaAppTask 内部 xTaskNotifyGive
+        uint32_t notified = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(30000));
+        if (!notified)
         {
-            Serial.printf("[LuaApp] %s: 执行错误\n", name);
+            Serial.printf("[LuaApp] %s: Lua 任务超时(30s),强制返回\n", name);
+            timedOut = true; // 通知 luaAppTask 不要调 goBack
+            // 任务可能还活着,但 setup() 必须返回让系统能休眠
         }
-
-        closeLua(L);
-        appManager.goBack();
+        else
+        {
+            Serial.printf("[LuaApp] %s: Lua 任务完成\n", name);
+        }
     }
 
-private:
+	private:
     // name/title 指向堆内存,在本类构造时分配、析构时释放。
     // 基类声明为 const char* 故不能被赋值,用 const_cast 绕开直接初始化的限制。
     // 更好的做法是存 char[] 成员然后让基类指针指向它,但这种写法对于简易实现足够。

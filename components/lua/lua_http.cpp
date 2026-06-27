@@ -26,6 +26,8 @@ static int lua_http_get(lua_State *L)
         return luaL_error(L, "参数: url");
     const char *url = luaL_checkstring(L, 1);
 
+    Serial.printf("[HTTP] GET %s\n", url);
+
     // HTTP 请求配置
     esp_http_client_config_t cfg = {};
     cfg.url = url;
@@ -63,6 +65,8 @@ static int lua_http_get(lua_State *L)
 
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
+
+    Serial.printf("[HTTP] 响应 code=%d body_len=%d\n", statusCode, (int)body.size());
 
     lua_pushinteger(L, statusCode);
     lua_pushstring(L, body.c_str());
