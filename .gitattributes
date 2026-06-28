@@ -1,0 +1,51 @@
+# 统一文本文件行尾为 LF,根治跨平台(Windows CRLF / Unix LF)混乱。
+# 配合 `git add --renormalize .` 可把已跟踪文件一次性规范化为 LF。
+# 之后编辑器/Edit 工具统一写 LF,不再产生行尾 diff 噪声、不再因 CRLF 匹配失败。
+* text=auto eol=lf
+
+# 源码/文本(显式声明,确保跨平台一致)
+*.c        text eol=lf
+*.cpp      text eol=lf
+*.h        text eol=lf
+*.hpp      text eol=lf
+*.lua      text eol=lf
+*.md       text eol=lf
+*.txt      text eol=lf
+*.js       text eol=lf
+*.html     text eol=lf
+*.css      text eol=lf
+*.json     text eol=lf
+*.py       text eol=lf
+*.sh       text eol=lf
+*.cmake    text eol=lf
+*.ld       text eol=lf
+*.in       text eol=lf
+CMakeLists.txt text eol=lf
+Makefile       text eol=lf
+
+# 二进制资源(禁止转换,避免损坏)
+*.bin   binary
+*.elf   binary
+*.img   binary
+*.hex   binary
+*.map   binary
+*.pem   binary
+*.key   binary
+*.cer   binary
+*.crt   binary
+*.der   binary
+*.jpg   binary
+*.jpeg  binary
+*.png   binary
+*.bmp   binary
+*.gif   binary
+*.ico   binary
+*.wav   binary
+*.mp3   binary
+*.ogg   binary
+*.zip   binary
+*.gz    binary
+*.tar   binary
+*.ttf   binary
+*.otf   binary
+*.pdf   binary
