@@ -191,6 +191,8 @@ static const struct { const char *name; const uint8_t *font; } _font_map[] = {
     // 中文（含 ASCII）
     {"wqy12",       u8g2_font_wqy12_t_gb2312},
     {"wqy16",       u8g2_font_wqy16_t_gb2312},
+    // 拼音 72px（SimHei，拉丁字母+声调+数字+标点，无汉字；用于"每日一字"注音）
+    {"pinyin72",    u8g2_font_Pinyin_72},
     // 英文等宽 透明背景
     {"4x6",         u8g2_font_4x6_tf},
     {"5x7",         u8g2_font_5x7_tf},

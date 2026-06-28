@@ -38,11 +38,18 @@ static const char PAGE_BLOCKLY[] PROGMEM = R"=====(
 <head>
 <meta charset="utf-8">
 <title>Blockly - esp32-starboard</title>
-<script src="https://unpkg.com/blockly/blockly.min.js"></script>
-<script src="https://unpkg.com/blockly/blocks_compressed.js"></script>
-<script src="https://unpkg.com/blockly/javascript_compressed.js"></script>
-<script src="https://unpkg.com/blockly/lua_compressed.js"></script>
-<link rel="stylesheet" href="https://unpkg.com/blockly/blockly.min.css">
+<!-- Blockly 走 bootcdn 并锁定 12.3.1:① 国内访问快;② 锁版本,避免 unpkg 默认拉到 v13
+     (v13 移除了 blocks_compressed.js / blockly.min.css / msg 等 UMD 文件,会 404)。 -->
+<script src="https://cdn.bootcdn.net/ajax/libs/blockly/12.3.1/blockly.min.js"></script>
+<script src="https://cdn.bootcdn.net/ajax/libs/blockly/12.3.1/blocks_compressed.js"></script>
+<script src="https://cdn.bootcdn.net/ajax/libs/blockly/12.3.1/javascript_compressed.js"></script>
+<script src="https://cdn.bootcdn.net/ajax/libs/blockly/12.3.1/lua_compressed.js"></script>
+<!-- 中文语言包:让内置积木(文本/数学/列表分类里的 text_*/math_*/lists_* 等)显示中文。
+     注意 bootcdn/cdnjs 路径是 msg/zh-hans.js(无 js/ 子目录),区别于 unpkg 的 msg/js/zh-hans.js。
+     自定义积木(display_*/image_*/gui_* 等,message0 已写中文)不受影响。 -->
+<script src="https://cdn.bootcdn.net/ajax/libs/blockly/12.3.1/msg/zh-hans.js"></script>
+<!-- 不引外部 blockly.min.css:Blockly core(blockly.min.js)在 inject() 时会自动把样式注入
+     <style> 标签,无需外部 css 文件;bootcdn/cdnjs 也不收录它。删掉这行 404 消失,显示不受影响。 -->
 <style>
   html, body { height: 100%; margin: 0; }
   #blocklyDiv { height: 70%; width: 100%; }
@@ -234,7 +241,7 @@ Blockly.defineBlocksWithJsonArray([
   {"type":"display_drawline","message0":"画直线 x1:%1 y1:%2 x2:%3 y2:%4 颜色:%5","args0":[{"type":"input_value","name":"X1"},{"type":"input_value","name":"Y1"},{"type":"input_value","name":"X2"},{"type":"input_value","name":"Y2"},{"type":"field_dropdown","name":"COLOR","options":[["黑色","0"],["白色","1"],["红色","63488"]]}],"inputsInline":true,"previousStatement":null,"nextStatement":null,"colour":120},
   {"type":"display_setcursor","message0":"设置光标 x:%1 y:%2","args0":[{"type":"input_value","name":"X"},{"type":"input_value","name":"Y"}],"inputsInline":true,"previousStatement":null,"nextStatement":"statement","colour":120},
   {"type":"display_print","message0":"显示文字 %1 字体 %2 颜色 %3","args0":[{"type":"input_value","name":"TEXT"},{"type":"field_dropdown","name":"FONT","options":[
-    ["中文 16px","wqy16"],["中文 12px","wqy12"],
+    ["中文 16px","wqy16"],["中文 12px","wqy12"],["拼音 72px","pinyin72"],
     ["英文 4x6","4x6"],["英文 5x7","5x7"],["英文 5x8","5x8"],
     ["英文 6x10","6x10"],["英文 6x12","6x12"],["英文 6x13","6x13"],
     ["英文 7x13","7x13"],["英文 7x14","7x14"],
@@ -297,6 +304,13 @@ Blockly.Lua.forBlock['display_print'] = function(b) {
   var font = b.getFieldValue('FONT');
   var color = b.getFieldValue('COLOR');
   return 'display.setFont("' + font + '")\ndisplay.setTextColor(' + color + ')\ndisplay.u8g2Print(' + t + ')\n';
+};
+// 「文本长度」积木改按【字符数】算(utf8.len),而非默认的 #(字节数);
+// 否则带声调/中文等多字节字符会算多。本设备面向中文,"长度"即字符数。
+// or 0 兜底:非法 UTF-8 时 utf8.len 返回 nil,避免 nil 参与算术报错。
+Blockly.Lua.forBlock['text_length'] = function(b) {
+  var arg = Blockly.Lua.valueToCode(b, 'VALUE', Blockly.Lua.ORDER_NONE) || '""';
+  return ['(utf8.len(' + arg + ') or 0)', Blockly.Lua.ORDER_ATOMIC];
 };
 Blockly.Lua.forBlock['image_bw'] = function(b) {
   var x = Blockly.Lua.valueToCode(b, 'X', 0) || '0';

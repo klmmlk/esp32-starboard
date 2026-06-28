@@ -224,6 +224,10 @@ class U8G2_FOR_ADAFRUIT_GFX : public Print {
 /*==========================================*/
 
 /* start font list */
+
+/* —— 项目自定义字体（pinyin_72.c，72px SimHei，仅拉丁字母+声调+数字+标点，无汉字）—— */
+extern const uint8_t u8g2_font_Pinyin_72[] U8G2_FONT_SECTION("u8g2_font_Pinyin_72");
+
 extern const uint8_t u8g2_font_u8glib_4_tf[] U8G2_FONT_SECTION("u8g2_font_u8glib_4_tf");
 extern const uint8_t u8g2_font_u8glib_4_tr[] U8G2_FONT_SECTION("u8g2_font_u8glib_4_tr");
 extern const uint8_t u8g2_font_u8glib_4_hf[] U8G2_FONT_SECTION("u8g2_font_u8glib_4_hf");
