@@ -9,7 +9,9 @@
 #include <Arduino.h>
 #include <stdio.h>
 #include <stdarg.h>
-#include <starboard_gui.h>   // GUI::pollInputs (delay 期间轮询按键)
+#include <starboard_config.h>  // PIN_BUTTONL/C/R(系统停止检测读三键)
+#include <starboard_hal.h>     // hal.pref(读 sleep_to 无操作超时)
+#include <starboard_gui.h>     // GUI::setStopCheck/resetStopCheck/pollInputs
 
 extern "C" {
 #include "lua.h"
@@ -28,22 +30,98 @@ void lua_printf(const char *format, ...)
 }
 
 // ---- 强制停止 Lua 的机制 ----
-// 独立监控任务(检测硬件按键长按)调 requestLuaStop() 置标志;
-// lua_execute 内的 line hook 检测到标志后用 luaL_error 中断脚本(死循环也能跳出)。
+// 外部调 requestLuaStop() 置标志;lua_execute 内的 line hook(luaSysTick)检测到标志后
+// 用 luaL_error 中断脚本(死循环也能跳出)。运行期系统监控(luaSysPollStop)也走此标志。
 static volatile bool g_luaStopRequested = false;
 static volatile bool g_luaRunning = false;
+
+// ---- Lua 运行期系统监控状态(无操作超时深睡 / 中键长按>1s 退出)----
+static volatile unsigned long g_lastActivityMs = 0;      // 最后按键活动时间
+static volatile uint32_t      g_sleepToSec = 60;         // 无操作超时(秒,从 pref "sleep_to")
+static volatile bool          g_luaSuppressSleep = false;// 豁免超时深睡(Web IDE 在线运行)
+static volatile LuaStopReason g_luaStopReason = LUA_STOP_NONE;
+static volatile bool          g_cTiming = false;         // 中键长按边沿计时
+static volatile unsigned long g_cStart = 0;
+static const unsigned long    C_EXIT_HOLD_MS = 1000;     // 中键长按退出阈值(>1s)
 
 void requestLuaStop() { g_luaStopRequested = true; }
 bool isLuaRunning() { return g_luaRunning; }
 bool luaStopRequested() { return g_luaStopRequested; }
 
+// 轻量停止检查:刷新活动时间 + 检测无操作超时/中键长按,命中则置停止标志+原因。
+// 不做 luaL_error(GUI s_stopCheck 回调无 lua_State;由 hook/luaSysTick/绑定层负责跳转)。
+bool luaSysPollStop()
+{
+    if (!g_luaRunning) return false;
+    // 活动刷新:任意键按下 = 用户在操作(digitalRead 物理电平,不消费事件队列)
+    if (digitalRead(PIN_BUTTONL) == LOW || digitalRead(PIN_BUTTONC) == LOW || digitalRead(PIN_BUTTONR) == LOW)
+        g_lastActivityMs = millis();
+    // (1) 无操作超时 → 深睡(Web IDE 模式 suppressSleep 跳过)
+    if (!g_luaSuppressSleep && (millis() - g_lastActivityMs > g_sleepToSec * 1000UL))
+    {
+        g_luaStopReason = LUA_STOP_SLEEP;
+        g_luaStopRequested = true;
+        return true;
+    }
+    // (2) 中键长按 >1s → 退出(边沿计时:短按<1s 松开后重置,不误触)
+    if (digitalRead(PIN_BUTTONC) == LOW)
+    {
+        if (!g_cTiming) { g_cTiming = true; g_cStart = millis(); }
+        else if (millis() - g_cStart >= C_EXIT_HOLD_MS)
+        {
+            g_luaStopReason = LUA_STOP_EXIT;
+            g_luaStopRequested = true;
+            return true;
+        }
+    }
+    else g_cTiming = false;
+    return false;
+}
+
+// C++ linkage 包装:GUI::setStopCheck 接收 C++ 函数指针,而 luaSysPollStop 是 extern "C"。
+static bool luaSysPollStopCpp() { return luaSysPollStop(); }
+
+// 系统 tick:刷新检测,命中则 luaL_error。供 hook / delay / waitKey 等【有 lua_State】的 yield 点。
+void luaSysTick(lua_State *L)
+{
+    luaSysPollStop();
+    if (g_luaStopRequested)
+    {
+        const char *why = (g_luaStopReason == LUA_STOP_SLEEP) ? "stopped: sleep timeout"
+                        : (g_luaStopReason == LUA_STOP_EXIT)  ? "stopped: exit by user"
+                        : "stopped by system";
+        luaL_error(L, why);
+    }
+}
+
+void luaSysBeginRun(bool suppressSleep)
+{
+    g_luaStopRequested = false;
+    g_luaRunning = true;
+    g_luaSuppressSleep = suppressSleep;
+    g_luaStopReason = LUA_STOP_NONE;
+    g_lastActivityMs = millis();
+    g_cTiming = false;
+    long s = hal.pref.getInt("sleep_to", 60);
+    if (s < 10) s = 10;
+    g_sleepToSec = (uint32_t)s;
+    GUI::setStopCheck(luaSysPollStopCpp); // GUI 阻塞(menu/msgbox)也被系统监控接管
+}
+
+void luaSysEndRun()
+{
+    GUI::resetStopCheck();
+    g_luaRunning = false;
+}
+
+LuaStopReason luaSysStopReason() { return g_luaStopReason; }
+
 static void luaStopHook(lua_State *L, lua_Debug *ar)
 {
     (void)ar;
-    if (g_luaStopRequested)
-        luaL_error(L, "stopped by user (长按中键强制停止)");
-    // 定期让出 CPU 给 IDLE 任务喂看门狗(LINE hook 每行触发,Lua 紧凑循环
-    // 可能长时间占用 main 任务导致 task_wdt 触发)。每 ~2000 次 hook yield 一次。
+    // 系统侧检测(无操作超时/中键长按/外部 requestLuaStop),命中设标志 → luaL_error
+    luaSysTick(L);
+    // 喂狗:LINE hook 每行触发,Lua 紧凑循环会长时间占用任务;每 ~2000 次 yield 让 IDLE 跑
     static uint16_t yieldCnt = 0;
     if (++yieldCnt >= 2000)
     {
@@ -73,12 +151,11 @@ static int common_delay(lua_State *L)
     if (lua_gettop(L) != 1)
         return luaL_error(L, "参数个数不符");
     int ms = luaL_checkinteger(L, 1);
-    // 分段 delay,每 10ms 检查停止标志 + 轮询按键
-    // (长 delay 期间主线程不调 tryGetKey 会丢键,这里主动 poll 入队)
+    // 分段 delay,每 10ms 做一次系统 tick(无操作超时/中键长按/外部停止,命中 luaL_error)
+    // + 轮询按键(长 delay 期间主线程不调 tryGetKey 会丢键,这里主动 poll 入队)
     while (ms > 0)
     {
-        if (g_luaStopRequested)
-            luaL_error(L, "stopped by user (长按中键)");
+        luaSysTick(L);
         GUI::pollInputs();
         int step = ms > 10 ? 10 : ms;
         delay(step);
@@ -162,14 +239,12 @@ int lua_execute_string(lua_State *L, const char *code)
 {
     if (!L || !code)
         return -1;
-    g_luaStopRequested = false;
-    g_luaRunning = true;
+    g_luaStopRequested = false; // 清外部残留(运行期 g_luaRunning 由 luaSysBeginRun/End 管)
     // 用 LINE hook:每行 Lua 代码触发一次。COUNT hook 在小循环体+长时间 C 函数
     // (如 gui.waitKey 阻塞)组合下很难凑够指令数,改 LINE 能在 waitKey 返回后立即触发。
     lua_sethook(L, luaStopHook, LUA_MASKLINE, 0);
     int ret = luaL_dostring(L, code);
     lua_sethook(L, nullptr, 0, 0);
-    g_luaRunning = false;
     if (ret != LUA_OK)
     {
         if (g_luaStopRequested)
@@ -186,12 +261,10 @@ int lua_execute(lua_State *L, const char *filename)
 {
     if (!L || !filename)
         return -1;
-    g_luaStopRequested = false;
-    g_luaRunning = true;
+    g_luaStopRequested = false; // 清外部残留(运行期 g_luaRunning 由 luaSysBeginRun/End 管)
     lua_sethook(L, luaStopHook, LUA_MASKLINE, 0);
     int ret = luaL_dofile(L, filename);
     lua_sethook(L, nullptr, 0, 0);
-    g_luaRunning = false;
     if (ret != LUA_OK)
     {
         if (g_luaStopRequested)

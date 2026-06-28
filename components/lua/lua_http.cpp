@@ -31,7 +31,7 @@ static int lua_http_get(lua_State *L)
     // HTTP 请求配置
     esp_http_client_config_t cfg = {};
     cfg.url = url;
-    cfg.timeout_ms = 10000;
+    cfg.timeout_ms = 3000; // 收窄盲区:同步阻塞期间 hook 不触发,最坏延迟 3s 才响应停止
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client)

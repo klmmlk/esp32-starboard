@@ -31,8 +31,7 @@ static int gui_waitKey(lua_State *L)
 {
     for (;;)
     {
-        if (luaStopRequested())
-            luaL_error(L, "stopped by user (长按中键强制停止)");
+        luaSysTick(L); // 系统侧检测(超时/中键长按/外部),命中 luaL_error
         int k = GUI::tryGetKey();
         if (k != 0)
         {
@@ -49,8 +48,7 @@ static int gui_waitButton(lua_State *L)
     int target = (int)luaL_checkinteger(L, 1);
     for (;;)
     {
-        if (luaStopRequested())
-            luaL_error(L, "stopped by user (长按中键强制停止)");
+        luaSysTick(L);
         int k = GUI::tryGetKey();
         if (k != 0 && k == target)
             return 0;
@@ -61,8 +59,7 @@ static int gui_waitButton(lua_State *L)
 // 非阻塞读按键:有键返回 1/2/3,无键返回 0(配合 millis 做空闲超时)。
 static int gui_tryGetKey(lua_State *L)
 {
-    if (luaStopRequested())
-        luaL_error(L, "stopped by user (长按中键强制停止)");
+    luaSysTick(L); // 系统侧检测,命中 luaL_error
     lua_pushinteger(L, GUI::tryGetKey());
     return 1;
 }
@@ -99,6 +96,8 @@ static int gui_msgbox(lua_State *L)
     const char *title = luaL_checkstring(L, 1);
     const char *msg = lua_tostring(L, 2);
     GUI::msgbox(title, msg);
+    if (luaStopRequested())
+        luaL_error(L, "stopped by system (sleep/exit)");
     return 0;
 }
 
@@ -108,7 +107,10 @@ static int gui_msgbox_yn(lua_State *L)
     const char *msg = lua_tostring(L, 2);
     const char *yes = lua_tostring(L, 3);
     const char *no = lua_tostring(L, 4);
-    lua_pushboolean(L, GUI::msgbox_yn(title, msg, yes, no));
+    bool r = GUI::msgbox_yn(title, msg, yes, no);
+    if (luaStopRequested())
+        luaL_error(L, "stopped by system (sleep/exit)");
+    lua_pushboolean(L, r);
     return 1;
 }
 
@@ -118,7 +120,10 @@ static int gui_msgbox_number(lua_State *L)
     uint16_t digits = (uint16_t)lua_tointeger(L, 2);
     if (digits == 0) digits = 1;
     int pre_value = (int)lua_tointeger(L, 3);
-    lua_pushinteger(L, GUI::msgbox_number(title, digits, pre_value));
+    int ret = GUI::msgbox_number(title, digits, pre_value);
+    if (luaStopRequested())
+        luaL_error(L, "stopped by system (sleep/exit)");
+    lua_pushinteger(L, ret);
     return 1;
 }
 
@@ -148,6 +153,9 @@ static int gui_menu(lua_State *L)
     for (int i = 0; i < len; i++)
         delete[] (char *)options[i].title;
     delete[] options;
+
+    if (luaStopRequested())
+        luaL_error(L, "stopped by system (sleep/exit)"); // 内存已释放,安全 longjmp
 
     lua_pushinteger(L, ret + 1); // Lua 索引从 1 开始
     return 1;

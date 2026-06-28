@@ -100,6 +100,10 @@ namespace
         pollKeys();
         vTaskDelay(pdMS_TO_TICKS(1));
     }
+
+    // Lua 运行期注册的停止检查回调;非空时 waitKeyEvent 每轮先调用一次,返回 true 则中断阻塞。
+    // 由 starboard_lua 的 luaSysBeginRun 注册为 luaSysPollStop(检查中键长按/超时 + 置停止标志)。
+    bool (*s_stopCheck)() = nullptr;
 } // namespace
 
 namespace GUI
@@ -112,11 +116,17 @@ namespace GUI
         display.epd2.setBusyCallback(guiBusyCallback, nullptr);
     }
 
+    void setStopCheck(bool (*check)()) { s_stopCheck = check; }
+    void resetStopCheck() { s_stopCheck = nullptr; }
+
     // 阻塞等一个按键事件(刷屏期间由 busy callback 填,非刷屏由本函数 poll 填)。
+    // 每轮先调一次 s_stopCheck:Lua 运行期若注册了停止回调且回调返回 true,则返回 KEY_STOP
+    // 哨兵,让上层 menu/msgbox 识别后提前正常返回(避免 Lua 调 GUI 阻塞时卡死、无法休眠/退出)。
     static int waitKeyEvent()
     {
         for (;;)
         {
+            if (s_stopCheck && s_stopCheck()) return KEY_STOP;
             pollKeys();
             int k = popKey();
             if (k >= 0) return k;
@@ -217,8 +227,8 @@ namespace GUI
         } while (display.nextPage());
 
         clearKeys();          // 刷窗期间的按键不算(用户还没看清),从干净状态接受确认
-        (void)waitKeyEvent(); // 任意键关闭
-        waitAllReleased();
+        if (waitKeyEvent() != KEY_STOP) // 任意键关闭;KEY_STOP 则不 waitAllReleased(交上层处理松键)
+            waitAllReleased();
         hal.pauseButtons = false;
     }
 
@@ -260,6 +270,7 @@ namespace GUI
         for (;;)
         {
             int k = waitKeyEvent();
+            if (k == KEY_STOP) { hal.pauseButtons = false; return false; } // 停止:取消,不 waitAllReleased
             if (k == PIN_BUTTONR) { result = true; break; }
             if (k == PIN_BUTTONL) { result = false; break; }
         }
@@ -331,6 +342,7 @@ namespace GUI
             }
 
             int k = waitKeyEvent();
+            if (k == KEY_STOP) { hal.pauseButtons = false; return -1; } // 停止:取消,不 waitAllReleased
             if (k == PIN_BUTTONC)
             {
                 if (waitLongPress(PIN_BUTTONC)) { selected = 0; updated = true; } // 长按回首页
@@ -379,6 +391,7 @@ namespace GUI
         for (;;)
         {
             int k = waitKeyEvent();
+            if (k == KEY_STOP) { hal.pauseButtons = false; return cur; } // 停止:返回当前值,不 waitAllReleased
             if (k == PIN_BUTTONL)
             {
                 if (waitLongPress(PIN_BUTTONL)) cd = (cd == (int)digits) ? 0 : cd + 1; // 长按=移位
@@ -445,6 +458,7 @@ namespace GUI
         for (;;)
         {
             int k = waitKeyEvent();
+            if (k == KEY_STOP) { hal.pauseButtons = false; return cv; } // 停止:返回当前值,不 waitAllReleased
             if (k == PIN_BUTTONL)
             {
                 if (waitLongPress(PIN_BUTTONL)) cd = (cd == 3) ? 0 : cd + 1;

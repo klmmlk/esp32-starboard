@@ -34,6 +34,16 @@ namespace GUI
     // 之后全刷等 BUSY 期间(~5s)按键自动进缓冲,GUI 消费——刷屏期间按键不丢。
     void initInput();
 
+    // ---- Lua 运行期停止检查(让 menu/msgbox 等阻塞 GUI 能被「中键长按>1s / 无操作超时」中断)----
+    // Lua 进入运行时注册一个回调;之后所有阻塞 GUI 内部的 waitKeyEvent 每轮先调一次回调,
+    // 回调返回 true(请求停止)则 waitKeyEvent 返回哨兵 KEY_STOP,各阻塞 GUI 识别后
+    // 【提前正常返回】(跳过 waitAllReleased、复位 pauseButtons),由 Lua 绑定层据
+    // luaStopRequested() luaL_error。回调内只做轻量检查 + 置停止标志,禁止重操作/longjmp
+    // (GUI 层无 lua_State,且要保证 C++ 栈正常展开,避免 menu 里 new 的内存泄漏)。
+    static constexpr int KEY_STOP = -2;      // waitKeyEvent 的停止哨兵(区别于 -1=队列空)
+    void setStopCheck(bool (*check)());      // 注册回调(nullptr=清除)
+    void resetStopCheck();
+
     // 检测长按:进入时键已按下,持续按住 ~600ms 返回 true(长按),中途松开返回 false(短按)。
     // btn 取 PIN_BUTTONL / PIN_BUTTONC / PIN_BUTTONR。
     bool waitLongPress(int btn);

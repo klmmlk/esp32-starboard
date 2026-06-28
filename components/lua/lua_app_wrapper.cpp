@@ -6,6 +6,7 @@
 #include "lua_app_wrapper.h"
 #include <starboard_app.h>
 #include <starboard_lua.h>
+#include <starboard_config.h>  // PIN_BUTTONC(setup 退出时等中键松开)
 #include <Arduino.h>
 #include <dirent.h>
 #include <string.h>
@@ -26,7 +27,6 @@ struct LuaTaskParam {
     char appName[64];
     char luaPath[128];
     TaskHandle_t notifyTask;  // 通知目标任务(即 AppManager.run 所在任务)
-    bool *timeoutFlag;        // 指向调用方的超时标志,超时后置位防止 goBack 竞态
 };
 
 // 读取文件内容到堆(调用者 free)
@@ -60,54 +60,35 @@ static char *readFile(const char *path)
 }
 
 // Lua 后台任务函数
-// 跑完 lua_execute 后通知主任务,然后 appManager.goBack() 切回上一个 App
+// 在独立任务(8192 栈,主任务仅 3582 不够)跑 lua_execute。LINE hook + 各 yield 点
+// 接管「无操作超时→深睡 / 中键长按>1s→退出」:命中则 luaL_error,lua_execute 正常返回。
+// 任务结束后仅 xTaskNotifyGive 通知主任务 setup() 继续——【绝不碰 display/appManager】,
+// 路由(进列表/深睡)由主任务 setup 据 luaSysStopReason() 决定,保证单线程无竞态。
 static void luaAppTask(void *param)
 {
     LuaTaskParam *p = (LuaTaskParam *)param;
-    const char *luaPath = p->luaPath;
     TaskHandle_t notifyTask = p->notifyTask;
 
     Serial.printf("[LuaApp] 任务开始: %s\n", p->appName);
     lua_State *L = openLua();
-    if (!L)
+    if (L)
     {
-        Serial.printf("[LuaApp] openLua 失败\n");
-        // 通知主 setup() 等待结束,自己进 goBack
-        if (!p->timeoutFlag || !(*p->timeoutFlag))
-            appManager.goBack();
-        xTaskNotifyGive(notifyTask);
-        vTaskDelete(NULL);
-        return;
-    }
-
-    Serial.printf("[LuaApp] 执行 %s\n", luaPath);
-    luaSetCurrentApp(p->appName);
-    Serial.printf("[LuaApp] lua_execute 开始\n");
-    int ret = lua_execute(L, luaPath);
-    Serial.printf("[LuaApp] lua_execute 返回 ret=%d\n", ret);
-
-    if (ret != 0)
-    {
-        Serial.printf("[LuaApp] %s: 执行错误\n", p->appName);
-    }
-
-    Serial.printf("[LuaApp] 关闭 Lua 状态机\n");
-    closeLua(L);
-
-    // Lua 执行完毕:通知等待中的 setup(),然后切换回上一个 App
-    // 注意:如果 setup() 已超时(timedOut=true),不再调 goBack(),避免竞态
-    if (!p->timeoutFlag || !(*p->timeoutFlag))
-    {
-        Serial.printf("[LuaApp] 正常结束,goBack\n");
-        appManager.goBack();
+        luaSetCurrentApp(p->appName);
+        luaSysBeginRun(false); // 注册系统监控(超时深睡 / 中键长按>1s 退出)
+        Serial.printf("[LuaApp] lua_execute %s\n", p->luaPath);
+        int ret = lua_execute(L, p->luaPath); // hook 内自停 → 返回非0
+        Serial.printf("[LuaApp] lua_execute 返回 ret=%d reason=%d\n",
+                      ret, (int)luaSysStopReason());
+        luaSysEndRun();
+        closeLua(L);
     }
     else
     {
-        Serial.printf("[LuaApp] 已超时,跳过 goBack\n");
+        Serial.printf("[LuaApp] openLua 失败\n");
     }
-    xTaskNotifyGive(notifyTask);
 
-    // 任务自我删除
+    // 通知主任务 setup() 继续,然后自杀
+    xTaskNotifyGive(notifyTask);
     vTaskDelete(NULL);
 }
 
@@ -145,9 +126,6 @@ class LuaApp : public AppBase
         snprintf(luaPath, sizeof(luaPath), "%s/%s/main.lua", APPS_DIR,
                  name ? name : "");
 
-        // 超时标志:setup() 超时后置位,luaAppTask 看到后不再调 goBack()
-        bool timedOut = false;
-
         // 准备任务参数
         LuaTaskParam *param = new LuaTaskParam();
         strncpy(param->appName, name, sizeof(param->appName) - 1);
@@ -155,9 +133,8 @@ class LuaApp : public AppBase
         strncpy(param->luaPath, luaPath, sizeof(param->luaPath) - 1);
         param->luaPath[sizeof(param->luaPath) - 1] = '\0';
         param->notifyTask = xTaskGetCurrentTaskHandle();
-        param->timeoutFlag = &timedOut;
 
-        // 创建后台任务跑 Lua(独立栈,不阻塞 AppManager 主循环)
+        // 创建后台任务跑 Lua(独立 8192 栈,不阻塞 AppManager 主循环)
         TaskHandle_t luaTaskHandle = NULL;
         BaseType_t ok = xTaskCreate(
             luaAppTask,
@@ -171,22 +148,29 @@ class LuaApp : public AppBase
         {
             Serial.printf("[LuaApp] %s: 任务创建失败\n", name);
             delete param;
-            appManager.goBack();
+            appManager.requestSelector();
             return;
         }
 
-        // 等待 Lua 任务执行完毕(最多 30 秒超时,防止 Lua 脚本卡死导致永不休眠)
-        // 通知来自 luaAppTask 内部 xTaskNotifyGive
-        uint32_t notified = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(30000));
-        if (!notified)
+        // 等 Lua 任务结束。hook 接管休眠/退出判断,任务一定会在
+        // 「无操作超时 / 中键长按>1s / 脚本自然结束」后退出,故用 portMAX_DELAY(无需硬超时)。
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        Serial.printf("[LuaApp] %s: 任务结束 reason=%d\n", name, (int)luaSysStopReason());
+
+        // 据退出原因路由(主任务做,任务本身不碰 appManager)
+        if (luaSysStopReason() == LUA_STOP_SLEEP)
         {
-            Serial.printf("[LuaApp] %s: Lua 任务超时(30s),强制返回\n", name);
-            timedOut = true; // 通知 luaAppTask 不要调 goBack
-            // 任务可能还活着,但 setup() 必须返回让系统能休眠
+            // 超时深睡:直接返回,run() 走保持期 → deepSleep
+            Serial.printf("[LuaApp] %s: 超时 → 保持期深睡\n", name);
         }
         else
         {
-            Serial.printf("[LuaApp] %s: Lua 任务完成\n", name);
+            // EXIT(中键长按)或 NONE(脚本自然结束)→ 进 App 列表。
+            // 先等中键松开,避免 openSelector 的 menu 立刻收到残留中键事件
+            while (digitalRead(PIN_BUTTONC) == LOW) delay(10);
+            delay(50);
+            Serial.printf("[LuaApp] %s: 退出/结束 → App 列表\n", name);
+            appManager.requestSelector();
         }
     }
 

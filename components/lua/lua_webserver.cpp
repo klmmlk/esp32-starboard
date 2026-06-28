@@ -26,45 +26,8 @@ static volatile bool isRunning = false;
 // 每次 handler 被调用(即有客户端请求)时更新活动时间,用于空闲超时判断
 static void updateActivity() { lastClientActivityMs = millis(); }
 
-// ---- 强制停止监控任务 ----
-// 独立任务:Lua 死循环会卡死主线程(web server 收不到请求),无法靠 HTTP 停止。
-// 此任务持续轮询中键,检测到长按 >=3 秒且 Lua 正在运行 → requestLuaStop(),
-// lua_execute 的 count hook 收到标志后 luaL_error 中断脚本,主线程恢复。
-static void killMonitorTask(void *)
-{
-    const unsigned long KILL_HOLD_MS = 3000;
-    bool counting = false;
-    unsigned long pressStart = 0;
-    for (;;)
-    {
-        if (isLuaRunning())
-        {
-            // BUTTON_ACTIVE_LOW:按下读 LOW
-            bool pressed = (digitalRead(PIN_BUTTONC) == LOW);
-            if (pressed)
-            {
-                if (!counting) { counting = true; pressStart = millis(); }
-                else if (millis() - pressStart >= KILL_HOLD_MS)
-                {
-                    Serial.println("[Web] 中键长按3秒,请求强制停止 Lua");
-                    requestLuaStop();
-                    counting = false;
-                    // 等 Lua 停止后继续(防止重复触发)
-                    while (isLuaRunning()) delay(50);
-                }
-            }
-            else
-            {
-                counting = false;
-            }
-        }
-        else
-        {
-            counting = false;
-        }
-        delay(50);
-    }
-}
+// (强制停止监控任务 killMonitorTask 已移除:Lua 停止由 starboard_lua 的 LINE hook
+//  统一接管 —— 中键长按>1s / 无操作超时,见 luaSysTick。无需独立监控任务)
 
 // HTML 页面:嵌入 Blockly + 定制工具箱
 static const char PAGE_BLOCKLY[] PROGMEM = R"=====(
@@ -952,8 +915,8 @@ void startBlocklyServer()
     server.begin();
     lastClientActivityMs = millis();
     serverStarted = true;
-    // 启动强制停止监控任务(独立任务,Lua 死循环时仍能响应中键长按)
-    xTaskCreate(killMonitorTask, "lua_kill", 3072, nullptr, 5, nullptr);
+    // (原 killMonitorTask 已移除:Lua 停止改由 starboard_lua 的 LINE hook 接管,
+    //  中键长按>1s / 无操作超时统一处理,无需独立监控任务)
     Serial.printf("[Web] Blockly 服务器已启动(http://%s/)\n", hal.wifiIp.c_str());
 }
 
@@ -996,7 +959,9 @@ bool pollRunRequest()
     if (L)
     {
         Serial.printf("[Web] 运行 App: %s\n", appName.c_str());
+        luaSysBeginRun(true); // Web IDE 在线运行:豁免超时深睡(连电脑保持唤醒);中键长按>1s 仍可停 Lua
         lua_execute(L, path);
+        luaSysEndRun();
         closeLua(L);
     }
 

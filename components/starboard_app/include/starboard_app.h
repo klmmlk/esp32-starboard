@@ -66,6 +66,8 @@ public:
     void gotoApp(AppBase *app);   // 切到指定 App(设 pendingSwitch,run 循环消费)
     void gotoApp(const char *name);
     void goBack();                // 出栈返回上层
+    /** 请求进入 App 列表(设 pendingSelector,run 循环消费)。供 Lua App 退出用。 */
+    void requestSelector() { pendingSelector = true; }
     /** 长按中键触发:GUI::menu 列出 showInList 的 App,选中则 gotoApp。 */
     void openSelector();
 
@@ -98,6 +100,7 @@ private:
     AppBase *home = nullptr;
     AppBase *pendingSwitch = nullptr; // gotoApp 挂起
     bool pendingBack = false;         // goBack 挂起
+    bool pendingSelector = false;     // requestSelector 挂起(Lua App 退出→进列表)
     uint32_t wakeupSec = 0;
     bool inited = false;
 
