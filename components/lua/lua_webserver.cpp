@@ -23,6 +23,8 @@ static String pendingRunApp;
 static volatile bool pendingRun = false;
 // 执行互斥锁(全局,跨 pollRunRequest 调用有效)
 static volatile bool isRunning = false;
+// Web IDE 保存/删除 App 后置位,主线程(appWebIDE 循环)检测并调 syncLuaApps 增量同步
+static volatile bool g_appsDirty = false;
 // 每次 handler 被调用(即有客户端请求)时更新活动时间,用于空闲超时判断
 static void updateActivity() { lastClientActivityMs = millis(); }
 
@@ -825,6 +827,7 @@ static void handleApiSave()
     fclose(f);
 
     Serial.printf("[Web] 已保存 App: %s → \"%s\" (%u bytes)\n", name.c_str(), title.c_str(), code.length());
+    g_appsDirty = true; // 通知主线程增量注册新 App(否则要重启才出现在应用列表)
     server.send(200, "text/plain", "OK: " + name);
 }
 
@@ -895,6 +898,7 @@ static void handleApiDelete()
     rmdir(dirPath);
 
     Serial.printf("[Web] 已删除 App: %s\n", name.c_str());
+    g_appsDirty = true; // 通知主线程注销已删 App
     server.send(200, "text/plain", "deleted: " + name);
 }
 
@@ -934,6 +938,11 @@ bool blocklyServerIdleTimeout(unsigned long idleSec)
         return false;
     return (millis() - lastClientActivityMs) > (idleSec * 1000UL);
 }
+
+// 主线程查询:Web IDE 是否有 App 增删(save/delete 置位)。返回 true 后应调 syncLuaApps,
+// 再 clearAppsDirty。供 appWebIDE 主循环用——避免重启即可在应用列表看到新建/删除的 App。
+bool appsDirty() { return g_appsDirty; }
+void clearAppsDirty() { g_appsDirty = false; }
 
 // 主线程调用:检测是否有待运行的 App,有则在主线程执行(避免 display 冲突)
 // 返回 true 表示执行了一次(无论成功与否)

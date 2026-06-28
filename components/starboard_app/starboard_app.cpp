@@ -24,6 +24,23 @@ void AppManager::registerApp(AppBase *app)
     appList[appCount++] = app;
 }
 
+void AppManager::unregisterApp(AppBase *app)
+{
+    if (!app) return;
+    for (int i = 0; i < appCount; ++i)
+    {
+        if (appList[i] == app)
+        {
+            for (int j = i; j < appCount - 1; ++j)
+                appList[j] = appList[j + 1];
+            appList[--appCount] = nullptr;
+            if (current == app) current = nullptr; // 防野指针(sync 场景一般不命中)
+            if (home == app) home = nullptr;
+            return;
+        }
+    }
+}
+
 AppBase *AppManager::findByName(const char *name)
 {
     if (!name)

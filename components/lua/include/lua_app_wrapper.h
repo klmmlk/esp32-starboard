@@ -16,4 +16,7 @@
 /** 扫描 /littlefs/apps/,将每个子目录包装成 AppBase 注册进 appManager。 */
 void scanAndRegisterLuaApps();
 
+/** 增量同步:新增的 App 注册、已删除的 App 注销(Web IDE 保存/删除后由主线程调用)。 */
+void syncLuaApps();
+
 #endif // LUA_APP_WRAPPER_H

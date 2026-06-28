@@ -53,6 +53,8 @@ public:
     // ------------------------- 注册与启动 -------------------------
     /** 注册一个 App(由 main 在 run() 前集中调用)。 */
     void registerApp(AppBase *app);
+    /** 注销一个 App(从 appList 移除,不 delete 对象;供 Web IDE 增删 Lua App 后同步)。 */
+    void unregisterApp(AppBase *app);
     /** 设默认 App(home)。深睡恢复失败 / 冷启动时进它。 */
     void setHome(AppBase *app) { home = app; }
     /** 启动初始化。M5 起会在此据 OOBE 进度改 home,目前为占位。 */

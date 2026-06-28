@@ -10,6 +10,7 @@
 #include <starboard_display.h>
 #include <starboard_gui.h>
 #include <lua_webserver.h>
+#include <lua_app_wrapper.h> // syncLuaApps(Web IDE 增删 App 后同步注册表)
 #include <starboard_config.h>
 #include <Arduino.h>
 
@@ -73,6 +74,14 @@ public:
         {
             // 处理 Web 请求(有请求时会刷新活动时间)
             handleBlocklyClient();
+
+            // Web IDE 保存/删除了 App → 主线程增量同步(新建的注册、删除的注销),
+            // 这样退出 Web IDE 后应用列表立即反映最新,无需重启开发板
+            if (appsDirty())
+            {
+                clearAppsDirty();
+                syncLuaApps();
+            }
 
             // 主线程检测并执行待运行的 App(/api/run 设的标志)
             // 在主线程跑 Lua+display,避免和 webserver 线程冲突导致残影/重绘

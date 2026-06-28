@@ -10,6 +10,7 @@
 #include <Arduino.h>
 #include <dirent.h>
 #include <string.h>
+#include <string>
 #include <vector>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -183,6 +184,43 @@ class LuaApp : public AppBase
 // 存储扫描到的 LuaApp 实例(防止析构)
 std::vector<LuaApp *> g_luaApps;
 
+// 从 conf.lua 内容解析 title(失败用"未命名"),写入 out。
+static void parseAppTitle(const char *confContent, char *out, size_t outSize)
+{
+    strncpy(out, "未命名", outSize - 1);
+    out[outSize - 1] = '\0';
+    if (!confContent) return;
+    const char *tpos = strstr(confContent, "title");
+    if (!tpos) return;
+    const char *q1 = strchr(tpos, '\"');
+    if (!q1) return;
+    const char *q2 = strchr(q1 + 1, '\"');
+    if (!q2) return;
+    size_t tlen = (size_t)(q2 - q1 - 1);
+    if (tlen > outSize - 1) tlen = outSize - 1;
+    memcpy(out, q1 + 1, tlen);
+    out[tlen] = '\0';
+}
+
+// 注册单个 App 目录:已注册则跳过(增量),否则解析 conf.lua + new LuaApp + registerApp。
+static bool registerLuaAppDir(const char *dirName)
+{
+    for (auto *a : g_luaApps)
+        if (strcmp(a->name, dirName) == 0) return false; // 已注册,跳过
+    char confPath[128];
+    snprintf(confPath, sizeof(confPath), "%s/%s/conf.lua", APPS_DIR, dirName);
+    char *confContent = readFile(confPath);
+    if (!confContent) return false;
+    char title[64];
+    parseAppTitle(confContent, title, sizeof(title));
+    free(confContent);
+    LuaApp *app = new LuaApp(dirName, title);
+    g_luaApps.push_back(app);
+    appManager.registerApp(app);
+    Serial.printf("[LuaApp] 注册: %s → \"%s\"\n", dirName, title);
+    return true;
+}
+
 } // namespace
 
 void scanAndRegisterLuaApps()
@@ -193,62 +231,58 @@ void scanAndRegisterLuaApps()
         Serial.printf("[LuaApp] 目录 %s 不存在,跳过\n", APPS_DIR);
         return;
     }
-
     struct dirent *ent;
     while ((ent = readdir(dir)) != nullptr)
     {
-        // 跳过 . 和 ..
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
             continue;
-        // 只认目录
         if (ent->d_type != DT_DIR)
             continue;
-
-        // 检查 conf.lua 是否存在
-        char confPath[128];
-        snprintf(confPath, sizeof(confPath), "%s/%s/conf.lua", APPS_DIR, ent->d_name);
-
-        char *confContent = readFile(confPath);
-        if (!confContent)
-        {
-            Serial.printf("[LuaApp] %s: 无 conf.lua,跳过\n", ent->d_name);
-            continue;
-        }
-
-        // 简易解析:从 conf.lua 中提取 title 变量
-        // conf.lua 示例: title = "我的应用"
-        const char *titleStr = "未命名";
-
-        // 在文本中查找 title = "xxx"
-        const char *tpos = strstr(confContent, "title");
-        if (tpos)
-        {
-            const char *q1 = strchr(tpos, '\"');
-            if (q1)
-            {
-                const char *q2 = strchr(q1 + 1, '\"');
-                if (q2)
-                {
-                    // 提取标题到临时缓冲区
-                    static char titleBuf[64];
-                    size_t tlen = (size_t)(q2 - q1 - 1);
-                    if (tlen > 63) tlen = 63;
-                    memcpy(titleBuf, q1 + 1, tlen);
-                    titleBuf[tlen] = '\0';
-                    titleStr = titleBuf;
-                }
-            }
-        }
-        free(confContent);
-
-        // 创建并注册 App
-        LuaApp *app = new LuaApp(ent->d_name, titleStr);
-        g_luaApps.push_back(app);
-        appManager.registerApp(app);
-
-        Serial.printf("[LuaApp] 注册: %s → \"%s\"\n", ent->d_name, titleStr);
+        registerLuaAppDir(ent->d_name); // 增量:已注册的自动跳过
     }
-
     closedir(dir);
     Serial.printf("[LuaApp] 扫描完成,共注册 %u 个 App\n", (unsigned)g_luaApps.size());
+}
+
+// 增量同步 /littlefs/apps/ 与已注册 App(供 Web IDE 保存/删除后由【主线程】调用,
+// 解决「Web IDE 新建 App 后应用列表找不到、需重启」的问题):
+//   - 目录存在但未注册 → 注册(新增)
+//   - 已注册但目录已删 → 注销并释放(删除)
+void syncLuaApps()
+{
+    DIR *dir = opendir(APPS_DIR);
+    if (!dir) return;
+    std::vector<std::string> dirs;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != nullptr)
+    {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+            continue;
+        if (ent->d_type != DT_DIR)
+            continue;
+        dirs.push_back(ent->d_name);
+    }
+    closedir(dir);
+
+    // 注销已删除的(目录不存在的已注册 App)
+    for (auto it = g_luaApps.begin(); it != g_luaApps.end(); )
+    {
+        bool exists = false;
+        for (auto &d : dirs)
+            if (strcmp((*it)->name, d.c_str()) == 0) { exists = true; break; }
+        if (!exists)
+        {
+            Serial.printf("[LuaApp] 注销已删除: %s\n", (*it)->name);
+            appManager.unregisterApp(*it);
+            delete *it;
+            it = g_luaApps.erase(it);
+        }
+        else ++it;
+    }
+
+    // 注册新增的
+    for (auto &d : dirs)
+        registerLuaAppDir(d.c_str());
+
+    Serial.printf("[LuaApp] 同步完成,共 %u 个 App\n", (unsigned)g_luaApps.size());
 }
