@@ -97,6 +97,7 @@ namespace
     //      会触发 IDLE0 watchdog panic。1ms 让出 ×5000 轮 ≈ 5s,够喂饱狗。
     void guiBusyCallback(const void *)
     {
+        display_notifyRefresh(); // 打戳:全刷发生 = 屏幕在活动,刷新"最后刷新时间"(供空闲休眠判断)
         pollKeys();
         vTaskDelay(pdMS_TO_TICKS(1));
     }
@@ -126,6 +127,7 @@ namespace GUI
     {
         for (;;)
         {
+            display_idleHibernate();      // 屏幕空闲>10s 则关驱动省电(bistable 内容保留,下次刷新自动恢复)
             if (s_stopCheck && s_stopCheck()) return KEY_STOP;
             pollKeys();
             int k = popKey();

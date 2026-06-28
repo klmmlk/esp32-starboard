@@ -117,6 +117,7 @@ public:
                 }
             }
 
+            display_idleHibernate(); // 屏幕空闲>10s 关驱动省电(Web IDE 挂着没人用时;内容保留,下次刷新自动恢复)
             delay(50);
         }
 

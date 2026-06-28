@@ -255,15 +255,15 @@ void AppManager::run()
 
     // 5. 保持期:画帧后保持唤醒 N 秒,按键则重画/列表;无操作超时后深睡
     //    - 保持期时长来自 hal.pref(\"sleep_to\",默认 60 秒,最小 10 秒)
-    //    - 前 10 秒屏幕正常显示;10 秒后 display.hibernate()(屏驱动关电源,内容保留显示不耗电)
-    //    - 期间任意键:若中键长按→列表;若短按/其他键→重画当前 App(setup 自动 powerUp 唤醒屏幕)
+    //    - 屏幕驱动休眠(关电源,内容保留)由 display_idleHibernate() 统一接管(距上次刷新>10s),
+    //      不再在此特判;按键重画的 setup 会经 busy callback 自动打戳重置计时。
+    //    - 期间任意键:若中键长按→列表;若短按/其他键→重画当前 App(setup 自动唤醒屏幕)
     //    - 重画后重置超时重新保持
     {
         unsigned long staySec = (unsigned long)hal.pref.getInt("sleep_to", 60);
         if (staySec < 10) staySec = 10;
         unsigned long stayMax = staySec * 1000UL;
         unsigned long stayStart = millis();
-        bool hibernateDone = false;
 
         while (millis() - stayStart < stayMax)
         {
@@ -295,7 +295,7 @@ void AppManager::run()
                         if (pendingSwitch || pendingBack) goto step3;
                         // 取消→不切换,继续保持期(重画一帧)
                         if (current) current->setup();
-                        stayStart = millis(); hibernateDone = false;
+                        stayStart = millis();
                         continue;
                     }
                     // short press fallthrough → 重画
@@ -307,16 +307,12 @@ void AppManager::run()
                 delay(50);
                 hal.pauseButtons = false;
                 if (current) current->setup();
-                stayStart = millis(); hibernateDone = false;
+                stayStart = millis();
                 continue;
             }
 
-            // 无按键:10 秒后 hibernate 屏幕(关驱动电源,内容保持)
-            if (!hibernateDone && (millis() - stayStart >= 10000))
-            {
-                display.hibernate();
-                hibernateDone = true;
-            }
+            // 无按键:距上次刷新>10s 则关屏驱动省电(由 display_idleHibernate 统一判断,幂等)
+            display_idleHibernate();
             delay(50);
         }
     }

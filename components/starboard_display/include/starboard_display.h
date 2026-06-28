@@ -44,6 +44,11 @@ void display_init();
 /** 刷完进入深睡省电(对应 GxEPD2 的 hibernate);之后再刷新需重新 display_init()。 */
 void display_deinit();
 
+// ---- 屏幕空闲休眠(电子纸 bistable:关驱动 IC 不改显示内容,纯省电,下次刷新自动恢复)----
+// 由 busy callback 打戳 + 各长驻循环协作触发,详见 starboard_display.cpp。
+void display_notifyRefresh();                           // 刷新打戳(busy callback 内调,勿直接用)
+bool display_idleHibernate(unsigned long idleSec = 10); // 距上次刷新>idleSec 则 hibernate;返回是否刚进入休眠
+
 // ---- 中文字体(默认主字体)----
 // wqy16_t_gb2312 是本库里【唯一同时含 ASCII + 全 GB2312 汉字】的字体(318KB)。
 // 其余含中文的变体要么不含 ASCII(unifont_t_chinese1/2/3 要分3段)、要么是日文

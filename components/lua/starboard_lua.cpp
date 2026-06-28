@@ -12,6 +12,7 @@
 #include <starboard_config.h>  // PIN_BUTTONL/C/R(系统停止检测读三键)
 #include <starboard_hal.h>     // hal.pref(读 sleep_to 无操作超时)
 #include <starboard_gui.h>     // GUI::setStopCheck/resetStopCheck/pollInputs
+#include <starboard_display.h> // display_idleHibernate(屏幕空闲关驱动省电)
 
 extern "C" {
 #include "lua.h"
@@ -52,6 +53,7 @@ bool luaStopRequested() { return g_luaStopRequested; }
 // 不做 luaL_error(GUI s_stopCheck 回调无 lua_State;由 hook/luaSysTick/绑定层负责跳转)。
 bool luaSysPollStop()
 {
+    display_idleHibernate();   // 屏幕空闲>10s 关驱动省电(不门控 suppressSleep:Web IDE 挂着也要关屏)
     if (!g_luaRunning) return false;
     // 活动刷新:任意键按下 = 用户在操作(digitalRead 物理电平,不消费事件队列)
     if (digitalRead(PIN_BUTTONL) == LOW || digitalRead(PIN_BUTTONC) == LOW || digitalRead(PIN_BUTTONR) == LOW)
