@@ -124,6 +124,7 @@ const TOOLBOX = {
       {'kind': 'block', 'type': 'display_clearscreen'},
       {'kind': 'block', 'type': 'display_drawrect'},
       {'kind': 'block', 'type': 'display_fillcircle'},
+      {'kind': 'block', 'type': 'display_drawline'},
       {'kind': 'block', 'type': 'display_setcursor'},
       {'kind': 'block', 'type': 'display_print'},
     ]},
@@ -230,6 +231,7 @@ Blockly.defineBlocksWithJsonArray([
   {"type":"display_clearscreen","message0":"清屏 %1","args0":[{"type":"field_dropdown","name":"COLOR","options":[["白色","1"],["黑色","0"],["红色","63488"]]}],"previousStatement":null,"nextStatement":null,"colour":120},
   {"type":"display_drawrect","message0":"画矩形 x:%1 y:%2 w:%3 h:%4 颜色:%5","args0":[{"type":"input_value","name":"X"},{"type":"input_value","name":"Y"},{"type":"input_value","name":"W","value":100},{"type":"input_value","name":"H","value":100},{"type":"field_dropdown","name":"COLOR","options":[["黑色","0"],["白色","1"],["红色","63488"]]}],"inputsInline":true,"previousStatement":null,"nextStatement":null,"colour":120},
   {"type":"display_fillcircle","message0":"填充圆 x:%1 y:%2 r:%3 颜色:%4","args0":[{"type":"input_value","name":"X"},{"type":"input_value","name":"Y"},{"type":"input_value","name":"R","value":30},{"type":"field_dropdown","name":"COLOR","options":[["黑色","0"],["白色","1"],["红色","63488"]]}],"inputsInline":true,"previousStatement":null,"nextStatement":null,"colour":120},
+  {"type":"display_drawline","message0":"画直线 x1:%1 y1:%2 x2:%3 y2:%4 颜色:%5","args0":[{"type":"input_value","name":"X1"},{"type":"input_value","name":"Y1"},{"type":"input_value","name":"X2"},{"type":"input_value","name":"Y2"},{"type":"field_dropdown","name":"COLOR","options":[["黑色","0"],["白色","1"],["红色","63488"]]}],"inputsInline":true,"previousStatement":null,"nextStatement":null,"colour":120},
   {"type":"display_setcursor","message0":"设置光标 x:%1 y:%2","args0":[{"type":"input_value","name":"X"},{"type":"input_value","name":"Y"}],"inputsInline":true,"previousStatement":null,"nextStatement":"statement","colour":120},
   {"type":"display_print","message0":"显示文字 %1 字体 %2 颜色 %3","args0":[{"type":"input_value","name":"TEXT"},{"type":"field_dropdown","name":"FONT","options":[
     ["中文 16px","wqy16"],["中文 12px","wqy12"],
@@ -277,6 +279,13 @@ Blockly.Lua.forBlock['display_fillcircle'] = function(b) {
   var y = Blockly.Lua.valueToCode(b, 'Y', 0) || '0';
   var r = Blockly.Lua.valueToCode(b, 'R', 0) || '30';
   return 'display.fillCircle(' + x + ',' + y + ',' + r + ',' + b.getFieldValue('COLOR') + ')\n';
+};
+Blockly.Lua.forBlock['display_drawline'] = function(b) {
+  var x1 = Blockly.Lua.valueToCode(b, 'X1', 0) || '0';
+  var y1 = Blockly.Lua.valueToCode(b, 'Y1', 0) || '0';
+  var x2 = Blockly.Lua.valueToCode(b, 'X2', 0) || '0';
+  var y2 = Blockly.Lua.valueToCode(b, 'Y2', 0) || '0';
+  return 'display.drawLine(' + x1 + ',' + y1 + ',' + x2 + ',' + y2 + ',' + b.getFieldValue('COLOR') + ')\n';
 };
 Blockly.Lua.forBlock['display_setcursor'] = function(b) {
   var x = Blockly.Lua.valueToCode(b, 'X', 0) || '0';

@@ -24,7 +24,8 @@
       "Bash(git -C /d/idf diff .claude/settings.json)",
       "Bash(git -C /d/idf diff --stat --ignore-cr-at-eol)",
       "Bash(git commit *)",
-      "Bash(git merge *)"
+      "Bash(git merge *)",
+      "Bash(awk '{print $2}')"
     ]
   }
 }

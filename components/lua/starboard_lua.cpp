@@ -45,7 +45,10 @@ static volatile bool          g_cTiming = false;         // 中键长按边沿�
 static volatile unsigned long g_cStart = 0;
 static const unsigned long    C_EXIT_HOLD_MS = 1000;     // 中键长按退出阈值(>1s)
 
-void requestLuaStop() { g_luaStopRequested = true; }
+void requestLuaStop() {
+    // 只在 Lua App 模式(g_luaSuppressSleep=false)生效,Web IDE 模式 suppressSleep=true 跳过。
+    if (!g_luaSuppressSleep) g_luaStopRequested = true;
+}
 bool isLuaRunning() { return g_luaRunning; }
 bool luaStopRequested() { return g_luaStopRequested; }
 

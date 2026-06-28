@@ -18,12 +18,16 @@ static int appmgr_gotoApp(lua_State *L)
         return luaL_error(L, "参数个数不符");
     const char *name = luaL_checkstring(L, 1);
     appManager.gotoApp(name);
+    // 通知 Lua 停止:Lua 任务收到请求后在 LINE hook 里 luaL_error 跳出,
+    // setup() 收到通知返回后 run() 处理 pendingSwitch 切换到目标 App。
+    requestLuaStop();
     return 0;
 }
 
 static int appmgr_goBack(lua_State *L)
 {
     appManager.goBack();
+    requestLuaStop();
     return 0;
 }
 
