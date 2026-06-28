@@ -162,7 +162,10 @@ const TOOLBOX = {
       {'kind': 'block', 'type': 'sys_yield'},
     ]},
     {'kind': 'category', 'name': 'HTTP', 'colour': '#607D8B', 'contents': [
+      {'kind': 'block', 'type': 'hal_wificonnect'},
       {'kind': 'block', 'type': 'http_get'},
+      {'kind': 'block', 'type': 'http_body'},
+      {'kind': 'block', 'type': 'json_get'},
     ]},
     {'kind': 'category', 'name': '数据', 'colour': '#0097A7', 'contents': [
       {'kind': 'block', 'type': 'data_save'},
@@ -263,7 +266,10 @@ Blockly.defineBlocksWithJsonArray([
   {"type":"gui_waitlongpress","message0":"等待按键 %1 被按下","args0":[{"type":"field_dropdown","name":"BTN","options":[["左键","1"],["中键","2"],["右键","3"]]}],"previousStatement":null,"nextStatement":null,"colour":20,"tooltip":"阻塞,直到指定按键被按下(忽略其他键)"},
   {"type":"gui_trygetkey","message0":"读取按键(无则返回0)","output":null,"colour":20,"tooltip":"非阻塞:有键返回1=左/2=中/3=右,无键返回0"},
   {"type":"sys_yield","message0":"让出CPU(放权)","previousStatement":null,"nextStatement":null,"colour":100,"tooltip":"在循环里定期调用,让系统检测睡眠/超时"},
-  {"type":"http_get","message0":"HTTP GET %1","args0":[{"type":"input_value","name":"URL"}],"output":null,"colour":180},
+  {"type":"hal_wificonnect","message0":"连接WiFi 等待 %1 秒","args0":[{"type":"input_value","name":"SEC","value":10}],"previousStatement":null,"nextStatement":null,"colour":180,"tooltip":"回合制深睡唤醒后WiFi未连，必须在HTTP请求前先调用本积木连接（否则lwIP未初始化，http会崩）。默认等10秒。"},
+  {"type":"http_get","message0":"HTTP GET %1","args0":[{"type":"input_value","name":"URL"}],"previousStatement":null,"nextStatement":null,"colour":180,"tooltip":"发起GET请求，响应体存入内置变量，供「HTTP响应体」「JSON取字段」使用"},
+  {"type":"http_body","message0":"HTTP响应体","output":null,"colour":180},
+  {"type":"json_get","message0":"JSON %1 取字段 %2","args0":[{"type":"input_value","name":"JSON"},{"type":"input_value","name":"KEY"}],"output":null,"colour":180,"tooltip":"从JSON字符串提取字段值（扁平字符串/数字字段，不处理嵌套/转义）"},
   {"type":"data_save","message0":"保存数据 %1 为 %2","args0":[{"type":"input_value","name":"KEY"},{"type":"input_value","name":"VAL"}],"inputsInline":true,"previousStatement":null,"nextStatement":null,"colour":160,"tooltip":"持久化保存(重启不丢,按App隔离)"},
   {"type":"data_load","message0":"读取数据 %1 默认 %2","args0":[{"type":"input_value","name":"KEY"},{"type":"input_value","name":"DEF"}],"inputsInline":true,"output":null,"colour":160,"tooltip":"读取持久化数据,无则返回默认值"},
 ]);
@@ -384,9 +390,19 @@ Blockly.Lua.forBlock['sys_yield'] = function(b) {
 Blockly.Lua.forBlock['gui_waitkey'] = function(b) {
   return ['gui.waitKey()', 0];
 };
+Blockly.Lua.forBlock['hal_wificonnect'] = function(b) {
+  var sec = Blockly.Lua.valueToCode(b, 'SEC', 0) || '8';
+  return 'hal.wifiConnect(' + sec + ')\n';
+};
 Blockly.Lua.forBlock['http_get'] = function(b) {
   var u = Blockly.Lua.valueToCode(b, 'URL', 0) || '""';
-  return ['http.get(' + u + ')', 0];
+  return '_http_code, _http_body = http.get(' + u + ')\n';
+};
+Blockly.Lua.forBlock['http_body'] = function(b) { return ['_http_body', 0]; };
+Blockly.Lua.forBlock['json_get'] = function(b) {
+  var j = Blockly.Lua.valueToCode(b, 'JSON', 0) || '""';
+  var k = Blockly.Lua.valueToCode(b, 'KEY', 0) || '""';
+  return ['http.jsonGet(' + j + ',' + k + ')', 0];
 };
 Blockly.Lua.forBlock['data_save'] = function(b) {
   var k = Blockly.Lua.valueToCode(b, 'KEY', 0) || '""';

@@ -171,10 +171,43 @@ static int gui_drawLBM(lua_State *L)
     return 0;
 }
 
-// 解码hex字符串(小端宽高头+像素)为位图,返回分配好的buf(需free)
+// PackBits 风格 RLE 解压:src[0..srcLen) -> out[0..expectedLen)。
+// header & 0x80 => 重复段(重复 257-header 次,2..128);否则字面段(header+1 字节,1..128)。
+// 成功返回 malloc 的 buf(长度 expectedLen,需 free),失败返回 NULL。
+// 用途:解压服务器返回的 RLE 汉字位图(大片留白,压缩率 70-85%)。
+static uint8_t *_rleDecode(const uint8_t *src, size_t srcLen, size_t expectedLen)
+{
+    uint8_t *out = (uint8_t *)malloc(expectedLen);
+    if (!out) return NULL;
+    size_t i = 0, o = 0;
+    while (i < srcLen && o < expectedLen) {
+        uint8_t hdr = src[i++];
+        if (hdr & 0x80) {                       // 重复段
+            int count = 257 - hdr;              //   2..128
+            if (i >= srcLen) { free(out); return NULL; }
+            uint8_t b = src[i++];
+            while (count-- > 0 && o < expectedLen) out[o++] = b;
+        } else {                                // 字面段
+            int count = hdr + 1;                //   1..128
+            while (count-- > 0 && o < expectedLen) {
+                if (i >= srcLen) break;
+                out[o++] = src[i++];
+            }
+        }
+    }
+    return out;
+}
+
+// 解码hex字符串(小端宽高头+像素)为位图,返回分配好的buf(需free)。
+// 若 hex 以 "R1" 开头,则头之后的像素段为 PackBits RLE 压缩,先解压再返回;
+// 否则按原明文 hex 处理(R 非十六进制字符,故 R1 前缀绝不会与真实宽高头冲突)。
 static uint8_t *_decodeHexBM(const char *hex, uint16_t *outW, uint16_t *outH)
 {
+    bool rle = (hex[0] == 'R' && hex[1] == '1');
+    if (rle) hex += 2;
+
     size_t len = strlen(hex);
+    if (len < 8) return NULL;
     uint16_t w = 0, h = 0;
     for (int i = 0; i < 4; i++) {
         char byteStr[3] = {hex[i * 2], hex[i * 2 + 1], 0};
@@ -184,13 +217,29 @@ static uint8_t *_decodeHexBM(const char *hex, uint16_t *outW, uint16_t *outH)
     }
     *outW = w; *outH = h;
     size_t expectedLen = ((w + 7) / 8) * h;
-    if (len < 8 || (len - 8) < expectedLen * 2) return NULL;
-    uint8_t *img = (uint8_t *)malloc(expectedLen);
-    if (!img) return NULL;
-    for (size_t i = 0; i < expectedLen; i++) {
-        char byteStr[3] = {hex[8 + i * 2], hex[8 + i * 2 + 1], 0};
-        img[i] = (uint8_t)strtol(byteStr, NULL, 16);
+
+    if (!rle) {                                  // 明文 hex:保持原逻辑
+        if ((len - 8) < expectedLen * 2) return NULL;
+        uint8_t *img = (uint8_t *)malloc(expectedLen);
+        if (!img) return NULL;
+        for (size_t i = 0; i < expectedLen; i++) {
+            char byteStr[3] = {hex[8 + i * 2], hex[8 + i * 2 + 1], 0};
+            img[i] = (uint8_t)strtol(byteStr, NULL, 16);
+        }
+        return img;
     }
+
+    // RLE 路径:把头之后的压缩像素段先 hex 解码到临时 buffer,再 RLE 解压
+    size_t rleHexLen = len - 8;
+    uint8_t *rleBin = (uint8_t *)malloc(rleHexLen / 2 + 1);
+    if (!rleBin) return NULL;
+    size_t rleBinLen = 0;
+    for (size_t i = 0; i + 1 < rleHexLen; i += 2) {
+        char byteStr[3] = {hex[8 + i], hex[8 + i + 1], 0};
+        rleBin[rleBinLen++] = (uint8_t)strtol(byteStr, NULL, 16);
+    }
+    uint8_t *img = _rleDecode(rleBin, rleBinLen, expectedLen);
+    free(rleBin);
     return img;
 }
 

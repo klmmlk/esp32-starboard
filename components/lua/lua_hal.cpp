@@ -94,6 +94,18 @@ static int hal_reboot(lua_State *L)
     return 0;
 }
 
+// ---------------------- WiFi（按需连接） ----------------------
+// 回合制深睡唤醒后 WiFi 未初始化（hal.init 不自动联网，lwIP 协议栈没起），
+// http.get 前必须先调本函数连 WiFi，否则一解析地址就 assert "Invalid mbox" 崩溃。
+// timeoutSec: 等连接的秒数（默认 8）；返回 true=已连上、false=超时未连上。
+static int hal_wifiConnect(lua_State *L)
+{
+    uint32_t timeoutSec = (lua_gettop(L) >= 1) ? (uint32_t)luaL_checkinteger(L, 1) : 8;
+    hal.wifiInit(timeoutSec);
+    lua_pushboolean(L, hal.wifiState == HAL::WifiState::Connected);
+    return 1;
+}
+
 // ---------------------- 注册表 ----------------------
 
 static const luaL_Reg _lualib[] = {
@@ -106,6 +118,7 @@ static const luaL_Reg _lualib[] = {
     {"getTime", hal_getTime},
     {"millis", hal_millis},
     {"reboot", hal_reboot},
+    {"wifiConnect", hal_wifiConnect},
     {NULL, NULL},
 };
 

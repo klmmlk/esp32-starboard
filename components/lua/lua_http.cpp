@@ -12,6 +12,7 @@
 #include <Arduino.h>
 #include <esp_http_client.h>
 #include <string>
+#include <algorithm>          // std::search（jsonGet 用）
 
 // 每个请求创建一个新的 client,请求结束后销毁(简化实现,无全局状态)
 
@@ -44,13 +45,17 @@ static int lua_http_get(lua_State *L)
     esp_err_t err = esp_http_client_open(client, 0); // GET
     if (err != ESP_OK)
     {
+        Serial.printf("[HTTP] 连接失败: %s\n", esp_err_to_name(err));
         esp_http_client_cleanup(client);
         lua_pushnil(L);
         lua_pushstring(L, esp_err_to_name(err));
         return 2;
     }
 
+    // 读取响应头（解析 status_code 与 content-length）；不调则 get_status_code 可能返回 0
+    int contentLength = esp_http_client_fetch_headers(client);
     int statusCode = esp_http_client_get_status_code(client);
+    Serial.printf("[HTTP] status=%d content_length=%d\n", statusCode, contentLength);
 
     // 读取全部响应体(最大 16KB)
     char buf[256];
@@ -73,8 +78,37 @@ static int lua_http_get(lua_State *L)
     return 2;
 }
 
+// 从 JSON 字符串提取一个字段的值（扁平字段：字符串或数字/布尔；不处理嵌套对象/转义）。
+// 设备侧用途：http.get 返回的 JSON 里抠 hex/pinyin 等字段。找不到返回空串。
+// 例：http.jsonGet(body, "hex") → "B400B400000..."
+static int http_jsonGet(lua_State *L)
+{
+    size_t jlen, klen;
+    const char *json = luaL_checklstring(L, 1, &jlen);
+    const char *key  = luaL_checklstring(L, 2, &klen);
+    std::string needle = "\"" + std::string(key, klen) + "\"";
+    const char *end = json + jlen;
+    const char *p = std::search(json, end, needle.begin(), needle.end());
+    if (p == end) { lua_pushliteral(L, ""); return 1; }      // 没找到 "key"
+    p += needle.size();
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ':')) p++;
+    if (p >= end) { lua_pushliteral(L, ""); return 1; }
+    if (*p == '"') {                                         // 字符串值："..."
+        p++;
+        const char *s = p;
+        while (p < end && *p != '"') p++;
+        lua_pushlstring(L, s, p - s);
+    } else {                                                 // 数字/布尔/null：读到分隔符
+        const char *s = p;
+        while (p < end && *p != ',' && *p != '}' && *p != ']' && *p != '\n' && *p != ' ') p++;
+        lua_pushlstring(L, s, p - s);
+    }
+    return 1;
+}
+
 static const luaL_Reg _lualib[] = {
     {"get", lua_http_get},
+    {"jsonGet", http_jsonGet},
     {NULL, NULL},
 };
 
