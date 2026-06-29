@@ -26,16 +26,32 @@ static bool buildDataPath(char *out, size_t outSize)
     return true;
 }
 
-// 读整个文件到行数组
+// 读整个文件到行数组(按 '\n' 分割,每行【含】行尾 '\n')。
+// 单行无长度限制:原先 char buf[512]+fgets,超长行(如 hex 位图数千字符)会被
+// 拆成多段,data.load 只认首个 "key=" 行 → 读出的值被截断。改逐字符读到换行,
+// std::string 在堆上动态增长,无 512 上限。
+// ★ 行尾 '\n' 必须留在 line 里:data_save 只给"被替换/新增的行"补 '\n',其他
+//   旧行是 fputs(l) 原样写回——若这里丢了 '\n',旧行写回时就会和下一行粘连
+//   (曾导致 pinyin=bō 后直接接 hex=,整串被 load('pinyin') 读出 → u8g2Print 卡死)。
 static std::vector<std::string> readAllLines(const char *path)
 {
     std::vector<std::string> lines;
     FILE *f = fopen(path, "r");
     if (!f)
         return lines;
-    char buf[512];
-    while (fgets(buf, sizeof(buf), f))
-        lines.push_back(buf);
+    std::string line;
+    int c;
+    while ((c = fgetc(f)) != EOF)
+    {
+        line.push_back((char)c); // 含 '\n' 一起入串——必须保留行尾换行!
+        if (c == '\n')
+        {
+            lines.push_back(line);
+            line.clear();
+        }
+    }
+    if (!line.empty()) // 末行无换行符也保留
+        lines.push_back(line);
     fclose(f);
     return lines;
 }

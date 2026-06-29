@@ -12,6 +12,8 @@
 #include "starboard_lua.h"
 #include <starboard_display.h>
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h> // vTaskDelay / pdMS_TO_TICKS(u8g2Print 分段喂狗)
+#include <freertos/task.h>
 #include <string.h>
 
 extern "C" {
@@ -270,10 +272,33 @@ static int display_print(lua_State *L)
     return 0;
 }
 
+// 纵深防御:72px 等大字体逐字 decode 开销大,超长串(如 data 模块异常粘连值)
+// 会让单次 print 卡 >5s → 饿死被监控的 IDLE0 → Task WDT panic。这里限制最多
+// MAX_CHARS 个字(超出截断——大字体一行本就画不下几个),并按 UTF-8 码点分段、
+// 每段 vTaskDelay(1) 让 IDLE0 喂狗。正常短文本几乎无额外开销(多一次 1tick 让出)。
 static int display_u8g2Print(lua_State *L)
 {
-    const char *str = luaL_checkstring(L, 1);
-    u8g2.print(str);
+    size_t len;
+    const char *str = luaL_checklstring(L, 1, &len);
+    const size_t MAX_CHARS = 64;
+    const size_t CHUNK     = 8;
+    size_t i = 0, chars = 0, chunkStart = 0, chunkCnt = 0;
+    while (i < len && chars < MAX_CHARS)
+    {
+        uint8_t c = (uint8_t)str[i];
+        size_t adv = (c < 0x80) ? 1
+                   : ((c & 0xE0) == 0xC0) ? 2
+                   : ((c & 0xF0) == 0xE0) ? 3
+                   : ((c & 0xF8) == 0xF0) ? 4 : 1;
+        if (i + adv > len) adv = len - i;
+        i += adv; chars++; chunkCnt++;
+        if (chunkCnt >= CHUNK || i >= len || chars >= MAX_CHARS)
+        {
+            u8g2.write((const uint8_t *)(str + chunkStart), i - chunkStart);
+            chunkStart = i; chunkCnt = 0;
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+    }
     return 0;
 }
 
