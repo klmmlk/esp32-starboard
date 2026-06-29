@@ -59,13 +59,39 @@ static std::vector<std::string> readAllLines(const char *path)
 static int data_save(lua_State *L)
 {
     const char *key = luaL_checkstring(L, 1);
-    // value → 字符串(数字也转字符串)
+    // value → 字符串(数字转字符串)；table 序列化成单行 JSON 数组(转义换行,避免破坏 data.kv 行格式)
     char numbuf[32];
+    std::string tableBuf;
     const char *valstr;
     if (lua_type(L, 2) == LUA_TNUMBER)
     {
         snprintf(numbuf, sizeof(numbuf), "%g", lua_tonumber(L, 2));
         valstr = numbuf;
+    }
+    else if (lua_type(L, 2) == LUA_TTABLE)
+    {
+        tableBuf = "[";
+        lua_Integer len = luaL_len(L, 2); // #t（仅支持 1..N 序列数组）
+        for (lua_Integer i = 1; i <= len; i++)
+        {
+            lua_rawgeti(L, 2, i);
+            size_t slen = 0;
+            const char *s = lua_tolstring(L, -1, &slen);
+            tableBuf += "\"";
+            for (size_t k = 0; s && k < slen; k++)
+            {
+                char c = s[k];
+                if (c == '"' || c == '\\') { tableBuf += '\\'; tableBuf += c; }
+                else if (c == '\n') { tableBuf += "\\n"; }
+                else if (c == '\r') { tableBuf += "\\r"; }
+                else tableBuf += c;
+            }
+            tableBuf += "\"";
+            if (i < len) tableBuf += ",";
+            lua_pop(L, 1);
+        }
+        tableBuf += "]";
+        valstr = tableBuf.c_str();
     }
     else
         valstr = luaL_checkstring(L, 2);
@@ -122,6 +148,47 @@ static int data_load(lua_State *L)
             // 按 default 类型转换
             if (lua_type(L, 2) == LUA_TNUMBER)
                 lua_pushnumber(L, strtod(val.c_str(), nullptr));
+            else if (lua_type(L, 2) == LUA_TTABLE)
+            {
+                // 反序列化: val 形如 ["a","b",...] → 列表(找不到数组格式则返回空表)
+                lua_newtable(L);
+                const char *p = val.c_str();
+                while (*p && *p != '[') p++;
+                if (*p == '[')
+                {
+                    p++;
+                    int idx = 1;
+                    while (*p && *p != ']')
+                    {
+                        while (*p == ' ' || *p == ',') p++;
+                        if (!*p || *p == ']') break;
+                        if (*p == '"')
+                        {
+                            p++;
+                            std::string elem;
+                            while (*p && *p != '"')
+                            {
+                                if (*p == '\\' && *(p + 1))
+                                {
+                                    char n = *(p + 1);
+                                    if (n == 'n') elem += '\n';
+                                    else if (n == 'r') elem += '\r';
+                                    else elem += n; // \" \\ 等
+                                    p += 2;
+                                }
+                                else { elem += *p; p++; }
+                            }
+                            if (*p == '"') p++;
+                            lua_pushlstring(L, elem.c_str(), elem.size());
+                            lua_rawseti(L, -2, idx++);
+                        }
+                        else
+                        {
+                            while (*p && *p != ',' && *p != ']') p++; // 非字符串元素,跳过
+                        }
+                    }
+                }
+            }
             else
                 lua_pushlstring(L, val.c_str(), val.size());
             return 1;

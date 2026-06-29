@@ -134,6 +134,7 @@ const TOOLBOX = {
       {'kind': 'block', 'type': 'display_drawline'},
       {'kind': 'block', 'type': 'display_setcursor'},
       {'kind': 'block', 'type': 'display_print'},
+      {'kind': 'block', 'type': 'display_printwrapped'},
     ]},
     {'kind': 'category', 'name': '图片', 'colour': '#9C27B0', 'contents': [
       {'kind': 'block', 'type': 'image_bw'},
@@ -165,7 +166,8 @@ const TOOLBOX = {
       {'kind': 'block', 'type': 'hal_wificonnect'},
       {'kind': 'block', 'type': 'http_get'},
       {'kind': 'block', 'type': 'http_body'},
-      {'kind': 'block', 'type': 'json_get'},
+      {'kind': 'block', 'type': 'http_code'},
+      {'kind': 'block', 'type': 'json_field'},
     ]},
     {'kind': 'category', 'name': '数据', 'colour': '#0097A7', 'contents': [
       {'kind': 'block', 'type': 'data_save'},
@@ -243,6 +245,7 @@ Blockly.defineBlocksWithJsonArray([
   {"type":"display_fillcircle","message0":"填充圆 x:%1 y:%2 r:%3 颜色:%4","args0":[{"type":"input_value","name":"X"},{"type":"input_value","name":"Y"},{"type":"input_value","name":"R","value":30},{"type":"field_dropdown","name":"COLOR","options":[["黑色","0"],["白色","1"],["红色","63488"]]}],"inputsInline":true,"previousStatement":null,"nextStatement":null,"colour":120},
   {"type":"display_drawline","message0":"画直线 x1:%1 y1:%2 x2:%3 y2:%4 颜色:%5","args0":[{"type":"input_value","name":"X1"},{"type":"input_value","name":"Y1"},{"type":"input_value","name":"X2"},{"type":"input_value","name":"Y2"},{"type":"field_dropdown","name":"COLOR","options":[["黑色","0"],["白色","1"],["红色","63488"]]}],"inputsInline":true,"previousStatement":null,"nextStatement":null,"colour":120},
   {"type":"display_setcursor","message0":"设置光标 x:%1 y:%2","args0":[{"type":"input_value","name":"X"},{"type":"input_value","name":"Y"}],"inputsInline":true,"previousStatement":null,"nextStatement":"statement","colour":120},
+  {"type":"display_printwrapped","message0":"自动换行显示 %1 字体%2 颜色%3 区域 x%4 y%5 到 x%6 行高%7 限y%8","args0":[{"type":"input_value","name":"TEXT"},{"type":"field_dropdown","name":"FONT","options":[["中文 16px","wqy16"],["中文 12px","wqy12"],["拼音 72px","pinyin72"],["英文 4x6","4x6"],["英文 5x7","5x7"],["英文 5x8","5x8"],["英文 6x10","6x10"],["英文 6x12","6x12"],["英文 6x13","6x13"],["英文 7x13","7x13"],["英文 7x14","7x14"],["英文 8x13","8x13"],["英文 9x15","9x15"],["英文 9x18","9x18"],["英文 10x20","10x20"],["粗体 6x13","bold6x13"],["粗体 7x13","bold7x13"],["粗体 8x13","bold8x13"],["粗体 9x15","bold9x15"],["窄体 6x12","narrow6x12"],["窄体 6x13","narrow6x13"],["窄体 7x13","narrow7x13"],["窄体 8x13","narrow8x13"]]},{"type":"field_dropdown","name":"COLOR","options":[["黑色","0"],["白色","1"],["红色","63488"]]},{"type":"input_value","name":"X0","value":190},{"type":"input_value","name":"Y","value":0},{"type":"input_value","name":"X1","value":400},{"type":"input_value","name":"LINEH","value":18},{"type":"input_value","name":"YMAX","value":300}],"inputsInline":true,"output":null,"colour":120,"tooltip":"在矩形区域内把单个字符串自动换行显示(逐字测宽),返回下一行y。列表遍历/序号前缀用循环+文本拼接积木自由组合"},
   {"type":"display_print","message0":"显示文字 %1 字体 %2 颜色 %3","args0":[{"type":"input_value","name":"TEXT"},{"type":"field_dropdown","name":"FONT","options":[
     ["中文 16px","wqy16"],["中文 12px","wqy12"],["拼音 72px","pinyin72"],
     ["英文 4x6","4x6"],["英文 5x7","5x7"],["英文 5x8","5x8"],
@@ -266,12 +269,13 @@ Blockly.defineBlocksWithJsonArray([
   {"type":"gui_waitlongpress","message0":"等待按键 %1 被按下","args0":[{"type":"field_dropdown","name":"BTN","options":[["左键","1"],["中键","2"],["右键","3"]]}],"previousStatement":null,"nextStatement":null,"colour":20,"tooltip":"阻塞,直到指定按键被按下(忽略其他键)"},
   {"type":"gui_trygetkey","message0":"读取按键(无则返回0)","output":null,"colour":20,"tooltip":"非阻塞:有键返回1=左/2=中/3=右,无键返回0"},
   {"type":"sys_yield","message0":"让出CPU(放权)","previousStatement":null,"nextStatement":null,"colour":100,"tooltip":"在循环里定期调用,让系统检测睡眠/超时"},
-  {"type":"hal_wificonnect","message0":"连接WiFi 等待 %1 秒","args0":[{"type":"input_value","name":"SEC","value":10}],"previousStatement":null,"nextStatement":null,"colour":180,"tooltip":"回合制深睡唤醒后WiFi未连，必须在HTTP请求前先调用本积木连接（否则lwIP未初始化，http会崩）。默认等10秒。"},
+  {"type":"hal_wificonnect","message0":"连接WiFi 等待 %1 秒","args0":[{"type":"input_value","name":"SEC","value":10}],"output":null,"colour":180,"tooltip":"连接WiFi并等待，前凸输出是否连上(true=已连/false=超时失败)。用「设变量为」接住→「如果」判断；HTTP请求前必须先连，否则lwIP未起会崩"},
   {"type":"http_get","message0":"HTTP GET %1","args0":[{"type":"input_value","name":"URL"}],"previousStatement":null,"nextStatement":null,"colour":180,"tooltip":"发起GET请求，响应体存入内置变量，供「HTTP响应体」「JSON取字段」使用"},
   {"type":"http_body","message0":"HTTP响应体","output":null,"colour":180},
-  {"type":"json_get","message0":"JSON %1 取字段 %2","args0":[{"type":"input_value","name":"JSON"},{"type":"input_value","name":"KEY"}],"output":null,"colour":180,"tooltip":"从JSON字符串提取字段值（扁平字符串/数字字段，不处理嵌套/转义）"},
-  {"type":"data_save","message0":"保存数据 %1 为 %2","args0":[{"type":"input_value","name":"KEY"},{"type":"input_value","name":"VAL"}],"inputsInline":true,"previousStatement":null,"nextStatement":null,"colour":160,"tooltip":"持久化保存(重启不丢,按App隔离)"},
-  {"type":"data_load","message0":"读取数据 %1 默认 %2","args0":[{"type":"input_value","name":"KEY"},{"type":"input_value","name":"DEF"}],"inputsInline":true,"output":null,"colour":160,"tooltip":"读取持久化数据,无则返回默认值"},
+  {"type":"http_code","message0":"HTTP状态码","output":null,"colour":180,"tooltip":"上一次HTTP GET的结果：成功为状态码(如200)，失败/未请求为0。配合「如果 HTTP状态码=200」判断是否拿到有效响应"},
+  {"type":"json_field","message0":"JSON %1 %2 %3","args0":[{"type":"input_value","name":"JSON"},{"type":"field_dropdown","name":"MODE","options":[["取字段","get"],["取数组","array"]]},{"type":"input_value","name":"KEY"}],"inputsInline":true,"output":null,"colour":180,"tooltip":"取字段→单个字符串/数字值；取数组→该数组字段所有字符串元素组成的列表（配合「列表」分类遍历）"},
+  {"type":"data_save","message0":"保存数据 %1 为 %2","args0":[{"type":"input_value","name":"KEY"},{"type":"input_value","name":"VAL"}],"inputsInline":true,"previousStatement":null,"nextStatement":null,"colour":160,"tooltip":"持久化保存(重启不丢,按App隔离)。支持文本/数字/列表，列表自动序列化"},
+  {"type":"data_load","message0":"读取数据 %1 默认 %2","args0":[{"type":"input_value","name":"KEY"},{"type":"input_value","name":"DEF"}],"inputsInline":true,"output":null,"colour":160,"tooltip":"读取持久化数据,无则返回默认值。默认值类型决定读出类型：默认填数字→数字、默认填文本→文本、默认填空列表→列表"},
 ]);
 
 // --- 各积木的 Lua 代码生成器 ---
@@ -310,6 +314,17 @@ Blockly.Lua.forBlock['display_print'] = function(b) {
   var font = b.getFieldValue('FONT');
   var color = b.getFieldValue('COLOR');
   return 'display.setFont("' + font + '")\ndisplay.setTextColor(' + color + ')\ndisplay.u8g2Print(' + t + ')\n';
+};
+Blockly.Lua.forBlock['display_printwrapped'] = function(b) {
+  var t = Blockly.Lua.valueToCode(b, 'TEXT', 0) || '""';
+  var font = b.getFieldValue('FONT');
+  var color = b.getFieldValue('COLOR');
+  var x0 = Blockly.Lua.valueToCode(b, 'X0', 0) || '190';
+  var y = Blockly.Lua.valueToCode(b, 'Y', 0) || '0';
+  var x1 = Blockly.Lua.valueToCode(b, 'X1', 0) || '400';
+  var lh = Blockly.Lua.valueToCode(b, 'LINEH', 0) || '18';
+  var ym = Blockly.Lua.valueToCode(b, 'YMAX', 0) || '300';
+  return ['display.printWrapped(' + t + ',"' + font + '",' + color + ',' + x0 + ',' + y + ',' + x1 + ',' + lh + ',' + ym + ')', 0];
 };
 // 「文本长度」积木改按【字符数】算(utf8.len),而非默认的 #(字节数);
 // 否则带声调/中文等多字节字符会算多。本设备面向中文,"长度"即字符数。
@@ -392,17 +407,19 @@ Blockly.Lua.forBlock['gui_waitkey'] = function(b) {
 };
 Blockly.Lua.forBlock['hal_wificonnect'] = function(b) {
   var sec = Blockly.Lua.valueToCode(b, 'SEC', 0) || '8';
-  return 'hal.wifiConnect(' + sec + ')\n';
+  return ['hal.wifiConnect(' + sec + ')', 0];
 };
 Blockly.Lua.forBlock['http_get'] = function(b) {
   var u = Blockly.Lua.valueToCode(b, 'URL', 0) || '""';
   return '_http_code, _http_body = http.get(' + u + ')\n';
 };
 Blockly.Lua.forBlock['http_body'] = function(b) { return ['_http_body', 0]; };
-Blockly.Lua.forBlock['json_get'] = function(b) {
+Blockly.Lua.forBlock['http_code'] = function(b) { return ['(_http_code or 0)', 0]; };
+Blockly.Lua.forBlock['json_field'] = function(b) {
   var j = Blockly.Lua.valueToCode(b, 'JSON', 0) || '""';
   var k = Blockly.Lua.valueToCode(b, 'KEY', 0) || '""';
-  return ['http.jsonGet(' + j + ',' + k + ')', 0];
+  var fn = b.getFieldValue('MODE') === 'array' ? 'http.jsonArray' : 'http.jsonGet';
+  return [fn + '(' + j + ',' + k + ')', 0];
 };
 Blockly.Lua.forBlock['data_save'] = function(b) {
   var k = Blockly.Lua.valueToCode(b, 'KEY', 0) || '""';

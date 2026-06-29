@@ -15,6 +15,7 @@
 #include <freertos/FreeRTOS.h> // vTaskDelay / pdMS_TO_TICKS(u8g2Print 分段喂狗)
 #include <freertos/task.h>
 #include <string.h>
+#include <string>
 
 extern "C" {
 #include "lua.h"
@@ -326,6 +327,82 @@ static int display_u8g2GetCursorY(lua_State *L)
     return 1;
 }
 
+// 测量字符串在"当前 u8g2 字体"下的像素宽度(Lua 侧按宽度做换行/截断)。
+// 注意:结果随当前 setFont 的字体变化,测量前先设好目标字体。
+static int display_getUTF8Width(lua_State *L)
+{
+    const char *str = luaL_checkstring(L, 1);
+    lua_pushinteger(L, u8g2.getUTF8Width(str));
+    return 1;
+}
+
+// 在区域 [x0, x1] 内把单个字符串 text 自动换行打印:设字体 font + 颜色 color,
+// 基线从 y 起、行高 lineH,基线超过 yMax 则停止。返回下一行基线 y。
+// 通用换行原语:列表遍历、序号前缀等由调用方用 Lua/积木自行组合。
+static int display_printWrapped(lua_State *L)
+{
+    size_t tlen;
+    const char *s = luaL_checklstring(L, 1, &tlen);
+    const char *fontName = luaL_checkstring(L, 2);
+    int color = luaL_checkinteger(L, 3);
+    int x0    = luaL_checkinteger(L, 4);
+    int y     = luaL_checkinteger(L, 5);
+    int x1    = luaL_checkinteger(L, 6);
+    int lineH = luaL_optinteger(L, 7, 18);
+    int yMax  = luaL_optinteger(L, 8, 300);
+
+    // 设字体(复用 _font_map,与 display_setFont 一致)
+    const uint8_t *font = nullptr;
+    for (int i = 0; i < _font_map_count; i++)
+        if (strcmp(fontName, _font_map[i].name) == 0) { font = _font_map[i].font; break; }
+    if (!font) return luaL_error(L, "未知字体: %s", fontName);
+    u8g2.setFont(font);
+    display.setTextColor((uint16_t)color);
+    u8g2.setForegroundColor((uint16_t)color);
+
+    int maxW = x1 - x0;
+    if (maxW < 1) maxW = 1;
+    std::string text(s, tlen);
+
+    // 逐码点贪心:本行 getUTF8Width ≤ maxW;y 超限即停
+    size_t i = 0, len = text.size();
+    while (i < len)
+    {
+        if (y > yMax) break;
+        size_t lineStart = i, lineEnd = i, k = i;
+        while (k < len)
+        {
+            uint8_t c = (uint8_t)text[k];
+            size_t adv = (c < 0x80) ? 1
+                       : ((c & 0xE0) == 0xC0) ? 2
+                       : ((c & 0xF0) == 0xE0) ? 3
+                       : ((c & 0xF8) == 0xF0) ? 4 : 1;
+            if (k + adv > len) adv = len - k;
+            size_t nextK = k + adv;
+            std::string seg(text.c_str() + lineStart, nextK - lineStart);
+            if (u8g2.getUTF8Width(seg.c_str()) > maxW) break;
+            lineEnd = nextK;
+            k = nextK;
+        }
+        if (lineEnd == lineStart)   // 单字即超宽(容错):强制放 1 个码点
+        {
+            uint8_t c = (uint8_t)text[lineStart];
+            size_t adv = (c < 0x80) ? 1
+                       : ((c & 0xE0) == 0xC0) ? 2
+                       : ((c & 0xF0) == 0xE0) ? 3
+                       : ((c & 0xF8) == 0xF0) ? 4 : 1;
+            if (adv > len - lineStart) adv = len - lineStart;
+            lineEnd = lineStart + adv;
+        }
+        u8g2.setCursor(x0, y);
+        u8g2.write((const uint8_t *)(text.c_str() + lineStart), lineEnd - lineStart);
+        y += lineH;
+        i = lineEnd;
+    }
+    lua_pushinteger(L, y);
+    return 1;
+}
+
 // ---------------------- 注册表 ----------------------
 
 static const luaL_Reg _lualib[] = {
@@ -353,6 +430,8 @@ static const luaL_Reg _lualib[] = {
     {"getCursorY", display_getCursorY},
     {"u8g2GetCursorX", display_u8g2GetCursorX},
     {"u8g2GetCursorY", display_u8g2GetCursorY},
+    {"getUTF8Width", display_getUTF8Width},
+    {"printWrapped", display_printWrapped},
     {NULL, NULL},
 };
 

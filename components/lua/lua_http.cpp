@@ -4,9 +4,9 @@
 // 改用已在 OTA 中验证的 IDF esp_http_client。
 //
 // Lua 用法:
-//   http.get("http://example.com/api")
-//   local code, body = http.response()
-//   http.close()
+//   local code, body = http.get("http://example.com/api")
+//   http.jsonGet(body, "hex")            -- 取字符串/标量字段（数组字段取第一个元素）
+//   http.jsonArray(body, "explanation")  -- 取数组字段所有字符串元素 -> {"...", "..."}
 
 #include "starboard_lua.h"
 #include <Arduino.h>
@@ -93,6 +93,23 @@ static int http_jsonGet(lua_State *L)
     p += needle.size();
     while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ':')) p++;
     if (p >= end) { lua_pushliteral(L, ""); return 1; }
+    if (*p == '[') {                                         // 数组值：取第一个字符串元素
+        p++;                                                 // 跳过 '['
+        while (p < end && *p != ']') {
+            while (p < end && (*p==' '||*p=='\t'||*p=='\n'||*p=='\r'||*p==',')) p++;  // 跳过元素间分隔
+            if (p >= end || *p == ']') break;
+            if (*p == '"') {                                 // 第一个字符串元素
+                p++;
+                const char *s = p;
+                while (p < end && *p != '"') p++;            // 读到闭合 "（不处理转义，与字符串分支一致）
+                lua_pushlstring(L, s, p - s);
+                return 1;
+            }
+            while (p < end && *p != ',' && *p != ']') p++;   // 非字符串元素，跳过
+        }
+        lua_pushliteral(L, "");                              // 空数组或无字符串元素 → 空串
+        return 1;
+    }
     if (*p == '"') {                                         // 字符串值："..."
         p++;
         const char *s = p;
@@ -101,7 +118,51 @@ static int http_jsonGet(lua_State *L)
     } else {                                                 // 数字/布尔/null：读到分隔符
         const char *s = p;
         while (p < end && *p != ',' && *p != '}' && *p != ']' && *p != '\n' && *p != ' ') p++;
-        lua_pushlstring(L, s, p - s);
+        std::string tok(s, p - s);
+        char *endp = nullptr;
+        double d = strtod(tok.c_str(), &endp);
+        if (!tok.empty() && endp == tok.c_str() + tok.size() &&
+            tok.find_first_not_of("0123456789.+-eE") == std::string::npos)
+            lua_pushnumber(L, d);                            // 数字字段 → number
+        else
+            lua_pushlstring(L, s, p - s);                    // true/false/null → 字符串
+    }
+    return 1;
+}
+
+// 从 JSON 提取一个数组字段的所有字符串元素，返回 Lua 表（整数索引 1..N）。
+// 非数组字段或找不到时返回空表 {}。
+// 例：http.jsonArray(body, "explanation") -> {"第一条释义", "第二条释义", ...}
+static int http_jsonArray(lua_State *L)
+{
+    size_t jlen, klen;
+    const char *json = luaL_checklstring(L, 1, &jlen);
+    const char *key  = luaL_checklstring(L, 2, &klen);
+    std::string needle = "\"" + std::string(key, klen) + "\"";
+    const char *end = json + jlen;
+    const char *p = std::search(json, end, needle.begin(), needle.end());
+
+    lua_newtable(L);                              // 结果表（默认空）
+    if (p == end) return 1;                        // 没找到 "key" → 空表
+    p += needle.size();
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ':')) p++;
+    if (p >= end || *p != '[') return 1;           // 值不是数组 → 空表
+
+    p++;                                          // 跳过 '['
+    int idx = 1;                                  // Lua 表从 1 开始
+    while (p < end && *p != ']') {
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',')) p++;  // 跳过元素间分隔
+        if (p >= end || *p == ']') break;
+        if (*p == '"') {                          // 字符串元素
+            p++;
+            const char *s = p;
+            while (p < end && *p != '"') p++;     // 读到闭合 "（不处理转义）
+            lua_pushlstring(L, s, p - s);
+            lua_rawseti(L, -2, idx++);            // t[idx] = s, idx 自增
+            if (p < end) p++;                     // 跳过闭合 "
+        } else {                                  // 非字符串元素（数字/布尔/null），跳过不入表
+            while (p < end && *p != ',' && *p != ']') p++;
+        }
     }
     return 1;
 }
@@ -109,6 +170,7 @@ static int http_jsonGet(lua_State *L)
 static const luaL_Reg _lualib[] = {
     {"get", lua_http_get},
     {"jsonGet", http_jsonGet},
+    {"jsonArray", http_jsonArray},
     {NULL, NULL},
 };
 
