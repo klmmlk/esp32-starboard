@@ -269,7 +269,7 @@ Blockly.defineBlocksWithJsonArray([
   {"type":"gui_waitkey","message0":"等待按键","output":null,"colour":20,"tooltip":"阻塞等待任意按键被按下,返回 1=左键 2=中键 3=右键"},
   {"type":"gui_waitlongpress","message0":"等待按键 %1 被按下","args0":[{"type":"field_dropdown","name":"BTN","options":[["左键","1"],["中键","2"],["右键","3"]]}],"previousStatement":null,"nextStatement":null,"colour":20,"tooltip":"阻塞,直到指定按键被按下(忽略其他键)"},
   {"type":"gui_trygetkey","message0":"读取按键(无则返回0)","output":null,"colour":20,"tooltip":"非阻塞:有键返回1=左/2=中/3=右,无键返回0"},
-  {"type":"hal_wakeupkey","message0":"唤醒键","output":null,"colour":20,"tooltip":"读取本次深睡唤醒是由哪个按键触发:1=左 2=中 3=右,0=非按键唤醒(定时/冷启动)。唤醒键的按下发生在App启动前,「等待按键」「读取按键」拿不到,需用本积木在开头显式读取"},
+  {"type":"hal_wakeupkey","message0":"唤醒键","output":null,"colour":20,"tooltip":"读取本次深睡唤醒是由哪个按键触发:1=左 2=中 3=右,0=非按键唤醒(定时/冷启动)。唤醒键的按下发生在App启动前,「等待按键」「读取按键」拿不到,需用本积木在开头显式读取。读完即清零,同一回合只返回一次,重复读会得到0——建议用「设变量为」保存结果"},
   {"type":"sys_yield","message0":"让出CPU(放权)","previousStatement":null,"nextStatement":null,"colour":100,"tooltip":"在循环里定期调用,让系统检测睡眠/超时"},
   {"type":"hal_wificonnect","message0":"连接WiFi 等待 %1 秒","args0":[{"type":"input_value","name":"SEC","value":10}],"output":null,"colour":180,"tooltip":"连接WiFi并等待，前凸输出是否连上(true=已连/false=超时失败)。用「设变量为」接住→「如果」判断；HTTP请求前必须先连，否则lwIP未起会崩"},
   {"type":"http_get","message0":"HTTP GET %1 超时 %2 ms","args0":[{"type":"input_value","name":"URL"},{"type":"field_number","name":"TIMEOUT","value":3000,"min":100,"max":60000}],"inputsInline":true,"previousStatement":null,"nextStatement":null,"colour":180,"tooltip":"发起GET请求，响应体存入内置变量，供「HTTP响应体」「JSON取字段」使用。超时(毫秒)内未完成则失败，默认3000"},

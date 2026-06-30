@@ -109,9 +109,13 @@ static int hal_wifiConnect(lua_State *L)
 // 唤醒键:本次(深睡)唤醒是由哪个按键触发。返回 1=左 2=中 3=右,0=非按键唤醒(定时/冷启动)。
 // 用途:按键唤醒的物理"按下"发生在 App 跑起来之前,gui.waitKey 捕获不到那个边沿(事件丢失),
 //      故 Lua App 在 setup 开头用本函数显式读取唤醒键并自行响应,而非依赖 waitKey 第一帧。
+// ★ 消费式:读完即清零(wakeupButton=-1)。同回合内第一次调用返回本次唤醒键,之后再读返回 0
+//   ——避免 while 循环里反复读到同一唤醒键、重复触发动作。下次深睡唤醒由 checkWakeupCause 重设。
+//   框架的中键手势判断在 setup 之前已读完,不受此清零影响。
 static int hal_wakeupKey(lua_State *L)
 {
     int wb = hal.wakeupButton;
+    hal.wakeupButton = -1;  // 读后清零(消费式):同回合内只返回一次唤醒键
     if (wb == PIN_BUTTONL)      lua_pushinteger(L, 1);
     else if (wb == PIN_BUTTONC) lua_pushinteger(L, 2);
     else if (wb == PIN_BUTTONR) lua_pushinteger(L, 3);
