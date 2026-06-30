@@ -12,6 +12,7 @@
 #include <esp_smartconfig.h> // esp_smartconfig_*(SmartConfig 配网,esp_wifi 组件)
 #include <esp_netif.h>       // esp_netif_create_default_wifi_sta
 #include <esp_netif_sntp.h>  // esp_netif_sntp_*(NTP,esp_netif 组件)
+#include <sys/time.h>        // settimeofday(冷启动从 NVS 恢复系统时间)
 #include <starboard_display.h> // display.hibernate(深睡前关屏幕驱动电源)
 #include <esp_littlefs.h>       // LittleFS VFS 挂载
 
@@ -138,9 +139,13 @@ void HAL::init()
         }
     }
 
-    // WiFi/NTP 不在 init 联网(阶段3 起【按需】:OOBE 配网 / 天气 App 才调 hal.wifiInit)。
-    // 主时钟靠深睡期间 RTC 维持走时;首次上电未对时显示 --:--,由 OOBE 配网 + NTP 校准。
-    Serial.println("[HAL] init 完成(WiFi 按需,未联网)。");
+    // WiFi/NTP 不在 init 阻塞联网(阶段3 起【按需】:OOBE 配网 / 天气 App 才调 hal.wifiInit)。
+    // 主时钟靠深睡期间 RTC 维持走时;冷启动时间由下方"持久化兜底 + 后台 NTP 修正"接管:
+    //   - coldBootTimeRecover:瞬间从 NVS 恢复上次 NTP 时间(差关机时长,但不再是1970)。
+    //   - coldBootTimeSyncStart:后台异步联网+NTP 精修(不阻塞 App 框架),深睡唤醒跳过。
+    coldBootTimeRecover();
+    coldBootTimeSyncStart();
+    Serial.println("[HAL] init 完成(WiFi 按需,冷启动后台校时)。");
 }
 
 void HAL::update()
@@ -227,6 +232,12 @@ static void ntpSyncCb(struct timeval *tv)
     char buf[32];
     strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &hal.timeinfo);
     Serial.printf("[HAL] NTP 已同步,北京时间 %s\n", buf);
+    // 持久化时间戳:供下次冷启动从 NVS 兜底恢复(会差关机时长,但不再是1970)。
+    if (tv)
+    {
+        hal.pref.putULong("last_ntp", (unsigned long)tv->tv_sec);
+        hal.pref.putUChar("last_ntp_set", 1); // 有效标记
+    }
 }
 
 static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -474,6 +485,73 @@ void HAL::getTime()
 {
     now = time(nullptr);
     localtime_r(&now, &timeinfo);
+}
+
+// 冷启动时间兜底:从 NVS 读上次 NTP 时间恢复系统时间(瞬间,非阻塞)。
+// 深睡唤醒跳过(RTC 走时准);从没同步过则跳过。恢复值比真实慢"关机时长",
+// 由 coldBootTimeSyncTask 后台 NTP 修正。
+void HAL::coldBootTimeRecover()
+{
+    if (wakeUpFromDeepSleep) return;              // 深睡唤醒:RTC 走时,无需恢复
+    if (!pref.getUChar("last_ntp_set", 0)) return; // 从没 NTP 同步过
+    unsigned long t = pref.getULong("last_ntp", 0);
+    if (t == 0) return;
+    struct timeval tv = { (time_t)t, 0 };
+    settimeofday(&tv, nullptr);
+    getTime();
+    char buf[32];
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+    Serial.printf("[HAL] 冷启动:从 NVS 恢复时间 %s(上次 NTP 值,慢关机时长)\n", buf);
+}
+
+// 冷启动后台校时任务:仅连已存凭据(不进 SmartConfig),连上后等 NTP 修正。
+// 同步成功由 ntpSyncCb 自动存 NVS。无凭据/连不上/NTP 超时都安静退出。
+static void coldBootTimeSyncTask(void *arg)
+{
+    // 禁止 STA_START 自动 SmartConfig:冷启动校时只连已存凭据,没凭据就跳过(不卡配网)。
+    allowAutoSmartconfig = false;
+    wifiEnsureInit();                // NVS/netif/event/wifi_start(幂等);有凭据→自动 connect
+    allowAutoSmartconfig = true;     // 恢复,供后续 OOBE / 重新配网使用
+
+    wifi_config_t cfg = {};
+    esp_wifi_get_config(WIFI_IF_STA, &cfg);
+    if (strlen((const char *)cfg.sta.ssid) == 0)
+    {
+        Serial.println("[HAL] 后台校时:无 WiFi 凭据,跳过(先 OOBE 配网)");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    Serial.println("[HAL] 后台校时:等待 WiFi 连接...");
+    uint32_t waited = 0;
+    while (hal.wifiState != HAL::WifiState::Connected && waited < 8000)
+    {
+        vTaskDelay(pdMS_TO_TICKS(200));
+        waited += 200;
+    }
+    if (hal.wifiState != HAL::WifiState::Connected)
+    {
+        Serial.println("[HAL] 后台校时:WiFi 未连上,放弃");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // GOT_IP 事件已 ntpStart,等同步回调(最多 8s)
+    waited = 0;
+    while (!hal.timeSynced && waited < 8000)
+    {
+        vTaskDelay(pdMS_TO_TICKS(200));
+        waited += 200;
+    }
+    Serial.println(hal.timeSynced ? "[HAL] 后台校时:NTP 已同步" : "[HAL] 后台校时:NTP 超时");
+    vTaskDelete(NULL);
+}
+
+void HAL::coldBootTimeSyncStart()
+{
+    if (wakeUpFromDeepSleep) return; // 深睡唤醒不后台联网(RTC 走时)
+    xTaskCreate(coldBootTimeSyncTask, "cb_timesync", 8192, nullptr, 2, nullptr);
+    Serial.println("[HAL] 冷启动:后台时间同步任务已启动");
 }
 
 HAL hal;

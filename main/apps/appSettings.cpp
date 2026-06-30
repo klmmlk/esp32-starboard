@@ -1,4 +1,4 @@
-// appSettings —— 设置(屏幕方向 / NTP 间隔 / 关于)
+// appSettings —— 设置(屏幕方向 / 重新配网 / 无操作超时 / 默认应用 / OTA / 关于)
 //
 // 阶段3 最小版:GUI::menu 阻塞菜单循环,全程 NVS(hal.pref)持久化,不引入 config.json/LittleFS。
 // 回合制语义:setup() 进菜单循环,用户操作完(选"返回" / 长按意图退出)调 goBack() 回上层。
@@ -15,8 +15,6 @@ namespace
 {
 // NVS 键名(namespace "starboard")。值:0=正常 / 1=反转(180°)。
 constexpr const char *KEY_SCREEN_ORIENT = "screen_orient";
-// NTP 同步间隔(分钟)。0=禁用自动同步,仅 OOBE 首次对时。实际定时同步消费留到网络/天气阶段。
-constexpr const char *KEY_NTP_INTERVAL = "ntp_interval";
 // 默认应用:存 App 的 name(identifier),空=跟随系统默认(clock 或 OOBE)。
 constexpr const char *KEY_DEFAULT_APP = "default_app";
 
@@ -38,7 +36,6 @@ public:
             // 主菜单(末项 {nullptr,nullptr} 哨兵)
             static const menu_item mainMenu[] = {
                 {nullptr, "屏幕方向"},
-                {nullptr, "NTP 间隔(存配置)"},
                 {nullptr, "重新配网"},
                 {nullptr, "无操作超时"},
                 {nullptr, "默认应用"},
@@ -51,12 +48,11 @@ public:
             switch (sel)
             {
             case 0: editScreenOrient(); break;
-            case 1: editNtpInterval(); break;
-            case 2: wifiReprov(); break;
-            case 3: editSleepTimeout(); break;
-            case 4: editDefaultApp(); break;
-            case 5: return otaUpgrade();  // gotoApp 设 pendingSwitch,return 让 run() 消费
-            case 6: aboutBox(); break;
+            case 1: wifiReprov(); break;
+            case 2: editSleepTimeout(); break;
+            case 3: editDefaultApp(); break;
+            case 4: return otaUpgrade();  // gotoApp 设 pendingSwitch,return 让 run() 消费
+            case 5: aboutBox(); break;
             default: appManager.goBack(); return; // "返回" 或异常索引 → 回上层
             }
         }
@@ -78,19 +74,6 @@ private:
         hal.pref.putUChar(KEY_SCREEN_ORIENT, (uint8_t)sel);
         display.setRotation(sel == 1 ? 2 : 0); // 0=正常, 2=反转180°
         GUI::msgbox("屏幕方向", sel == 1 ? "已设为反转" : "已设为正常");
-    }
-
-    // NTP 同步间隔:msgbox_number 输入分钟数(0=禁用),存 NVS。
-    void editNtpInterval()
-    {
-        int cur = hal.pref.getInt(KEY_NTP_INTERVAL, 720); // 默认 720 分钟(12h)
-        int v = GUI::msgbox_number("NTP间隔(分钟)", 4, cur);
-        if (v < 0)
-            v = 0;
-        hal.pref.putInt(KEY_NTP_INTERVAL, v);
-        char buf[48];
-        snprintf(buf, sizeof(buf), v == 0 ? "已禁用自动同步" : "已设为 %d 分钟", v);
-        GUI::msgbox("NTP 同步间隔", buf);
     }
 
     // 无操作超时(秒):屏幕 10 秒后 hibernate,超时后进深睡

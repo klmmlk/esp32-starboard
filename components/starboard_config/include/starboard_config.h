@@ -83,7 +83,4 @@
 // 时区: 东八区
 #define TIMEZONE "CST-8"
 
-// NTP 同步间隔选项表(分钟),索引对应 settings 的 p1 值
-// 0:禁用 1:2h 2:4h 3:6h 4:12h 5:24h 6:36h 7:48h
-
 #endif // STARBOARD_CONFIG_H

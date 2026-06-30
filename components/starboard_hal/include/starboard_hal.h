@@ -70,6 +70,12 @@ public:
     void wifiInit(uint32_t timeoutSec = 8);
     /** GOT_IP 后启动 esp_netif_sntp 同步。 */
     void ntpStart();
+    /** 冷启动时间兜底:从 NVS 读上次 NTP 时间 settimeofday 恢复(瞬间,非阻塞)。
+     *  深睡唤醒跳过(RTC 走时准)。恢复值比真实慢"关机时长",由 coldBootTimeSyncStart 后台修正。 */
+    void coldBootTimeRecover();
+    /** 冷启动后台联网+NTP 修正(独立任务,不阻塞主流程)。仅连已存凭据,无凭据跳过(不进 SmartConfig)。
+     *  同步成功由 ntpSyncCb 自动存 NVS,供下次冷启动兜底。深睡唤醒跳过。 */
+    void coldBootTimeSyncStart();
     /**
      * @brief 重新配网:清旧 WiFi 配置 → 停/重启 WiFi → 进入 SmartConfig 等新网。
      *        阻塞直到连上或超时(默认 180s)。调用方应先显示配网提示帧。

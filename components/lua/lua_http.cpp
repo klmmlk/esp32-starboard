@@ -4,7 +4,8 @@
 // 改用已在 OTA 中验证的 IDF esp_http_client。
 //
 // Lua 用法:
-//   local code, body = http.get("http://example.com/api")
+//   local code, body = http.get("http://example.com/api")           -- 第二参数可选:超时毫秒,默认3000
+//   local code, body = http.get(url, 5000)
 //   http.jsonGet(body, "hex")            -- 取字符串/标量字段（数组字段取第一个元素）
 //   http.jsonArray(body, "explanation")  -- 取数组字段所有字符串元素 -> {"...", "..."}
 
@@ -23,16 +24,19 @@ extern "C" {
 
 static int lua_http_get(lua_State *L)
 {
-    if (lua_gettop(L) != 1)
-        return luaL_error(L, "参数: url");
+    int n = lua_gettop(L);
+    if (n < 1 || n > 2)
+        return luaL_error(L, "参数: url [, timeout_ms]");
     const char *url = luaL_checkstring(L, 1);
+    int timeout_ms = (int)luaL_optinteger(L, 2, 3000);
+    if (timeout_ms < 100) timeout_ms = 100; // 下限,避免过短
 
-    Serial.printf("[HTTP] GET %s\n", url);
+    Serial.printf("[HTTP] GET %s (timeout %dms)\n", url, timeout_ms);
 
     // HTTP 请求配置
     esp_http_client_config_t cfg = {};
     cfg.url = url;
-    cfg.timeout_ms = 3000; // 收窄盲区:同步阻塞期间 hook 不触发,最坏延迟 3s 才响应停止
+    cfg.timeout_ms = timeout_ms; // 超时(默认3000):同步阻塞期间 hook 不触发,最坏延迟此值才响应停止
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client)
