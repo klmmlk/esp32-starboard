@@ -84,6 +84,8 @@ public:
     AppBase *homeApp() const { return home; }
     // 是否有待切换的 App(Lua gotoApp 设置,run 循环消费)。web IDE 据此判断是否退出。
     bool hasPendingSwitch() const { return pendingSwitch != nullptr; }
+    // 是否有待处理的 goBack(Lua goBack 设置,run 循环消费)。供 lua_app_wrapper 判断脚本是否主动切走。
+    bool hasPendingBack() const { return pendingBack; }
     /**
      * 收集 showInList 的 App 到 items 数组,供设置界面做"默认应用"选择器。
      * @param items 菜单数组(调用方分配,大小 MAX_APPS+1)

@@ -166,12 +166,22 @@ class LuaApp : public AppBase
         }
         else
         {
-            // EXIT(中键长按)或 NONE(脚本自然结束)→ 进 App 列表。
+            // EXIT(中键长按)或 NONE(脚本自然结束)。
             // 先等中键松开,避免 openSelector 的 menu 立刻收到残留中键事件
             while (digitalRead(PIN_BUTTONC) == LOW) delay(10);
             delay(50);
-            Serial.printf("[LuaApp] %s: 退出/结束 → App 列表\n", name);
-            appManager.requestSelector();
+            // 若脚本已主动 gotoApp/goBack(pending 已设),尊重脚本意图,不再 requestSelector
+            // —— 否则 pendingSelector 残留,会在下个 App 的 setup 后误触发 openSelector(列表)
+            //    而不是按 reason 走保持期/深睡。
+            if (!appManager.hasPendingSwitch() && !appManager.hasPendingBack())
+            {
+                Serial.printf("[LuaApp] %s: 退出/结束 → App 列表\n", name);
+                appManager.requestSelector();
+            }
+            else
+            {
+                Serial.printf("[LuaApp] %s: 结束(脚本已请求切换,不进列表)\n", name);
+            }
         }
     }
 
