@@ -26,7 +26,7 @@
 // 这组沿用 hello-world,已验证可用。如改线,同步改 main.cpp 构造函数。
 #define CONFIG_SPI_MOSI 11
 #define CONFIG_SPI_SCK  12
-#define CONFIG_SPI_MISO 13 // 屏幕一般不读,保留默认
+//#define CONFIG_SPI_MISO 13 // 屏幕一般不读,保留默认
 #define CONFIG_SPI_CS   10
 #define CONFIG_PIN_DC   8
 #define CONFIG_PIN_RST  7
@@ -57,10 +57,14 @@
 #define BATTERY_ADC_MAX 4095
 #define BATTERY_SCALE   7230 // adc * BATTERY_SCALE / BATTERY_ADC_MAX ≈ 毫伏
 
-// ----------------------------- 蜂鸣器(暂未实现) ------------------------------
-// 无源蜂鸣器,LEDC 按频率驱动(对齐 LiClock,支持频率/旋律)。
-// M6 暂缓:硬件就绪后移植 LiClock Buzzer.cpp(ledcWriteTone + 队列任务)。
-#define PIN_BUZZER 40 // 无源蜂鸣器
+// ----------------------------- 扬声器(MAX98357A I2S) ------------------------------
+// MAX98357A I2S 功放(单声道,免 MCLK,内置 DAC+D 类),三线 BCLK/LRC/DIN。
+// 驱动见 components/starboard_audio/(IDF driver/i2s_std + libhelix MP3 解码)。
+// GPIO13(BCLK)原是屏幕 SPI 默认 MISO,但 MISO 物理未接、屏幕不读,故让给 I2S;
+// 故 audio.init() 必须在 display_init() 之后调用(I2S 接管该引脚)。
+#define PIN_BCLK 13  // I2S 位时钟
+#define PIN_LRCLK 14 // I2S WS(左右声道选择)
+#define PIN_DIN 17   // I2S 数据输出(接 MAX98357A DIN)
 
 // ----------------------------- SD 卡 ⚠️占位待改(暂可不用) ---------------------
 // 若暂不用 SD,这些不会被引用(SD 相关代码暂不移植)。填好引脚后阶段后期启用。

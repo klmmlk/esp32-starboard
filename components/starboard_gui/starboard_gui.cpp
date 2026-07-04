@@ -390,6 +390,27 @@ namespace GUI
         int pow = 1;
         for (int i = 0; i < cd; ++i) pow *= 10;
         bool changed = true;
+        // 进入即画初始帧(否则屏幕停留在菜单,用户以为没进去、按中键被当"确认"直接退出 → 表象"调不了")
+        display.setFullWindow();
+        display.firstPage();
+        do
+        {
+            drawWindowsWithTitle(title, sx, sy, w, h);
+            display.drawRoundRect(ix, iy, iw, ih, 3, COL_NORMAL);
+            display.setFont(&FreeSans9pt7b);
+            display.setTextColor(COL_NORMAL);
+            display.setCursor(ix + 8, iy + (ih - 9) / 2 + 12);
+            int n = cur;
+            if (n < 0) { display.print('-'); n = -n; }
+            uint8_t d[9];
+            for (int i = 0; i <= (int)digits; ++i) { d[i] = n % 10; n /= 10; }
+            for (int i = (int)digits; i >= 0; --i)
+            {
+                if (i == cd)
+                    display.drawFastHLine(display.getCursorX(), display.getCursorY() + 2, 10, COL_NORMAL);
+                display.print(d[i], DEC);
+            }
+        } while (display.nextPage());
         for (;;)
         {
             int k = waitKeyEvent();
@@ -422,9 +443,10 @@ namespace GUI
                 {
                     drawWindowsWithTitle(title, sx, sy, w, h);
                     display.drawRoundRect(ix, iy, iw, ih, 3, COL_NORMAL);
-                    display.setFont(&FreeSans9pt7b);
+                    display.setFont();
+                    display.setTextSize(2);
                     display.setTextColor(COL_NORMAL);
-                    display.setCursor(ix + 8, iy + (ih - 9) / 2 + 12);
+                    display.setCursor(ix + 8, iy + (ih - 14) / 2);
                     int n = cur;
                     if (n < 0) { display.print('-'); n = -n; }
                     uint8_t d[9];
@@ -457,6 +479,31 @@ namespace GUI
         uint8_t cd = 3;
         int cv = pre_value;
         bool changed = true;
+        // 进入即画初始帧(同 msgbox_number:否则屏幕停留上一帧、中键被当确认误退出)
+        {
+            uint8_t tb[4];
+            tb[3] = (cv / 60) / 10;
+            tb[2] = (cv / 60) % 10;
+            tb[1] = (cv % 60) / 10;
+            tb[0] = (cv % 60) % 10;
+            display.setFullWindow();
+            display.firstPage();
+            do
+            {
+                drawWindowsWithTitle(title, sx, sy, w, h);
+                display.drawRoundRect(ix, iy, iw, ih, 3, COL_NORMAL);
+                display.setFont(&FreeSans9pt7b);
+                display.setTextColor(COL_NORMAL);
+                display.setCursor(ix + 8, iy + (ih - 9) / 2 + 12);
+                for (int i = 3; i >= 0; --i)
+                {
+                    if (i == (int)cd)
+                        display.drawFastHLine(display.getCursorX(), display.getCursorY() + 2, 10, COL_NORMAL);
+                    display.print(tb[i], DEC);
+                    if (i == 2) display.print(':'); // HH:MM 冒号
+                }
+            } while (display.nextPage());
+        }
         for (;;)
         {
             int k = waitKeyEvent();

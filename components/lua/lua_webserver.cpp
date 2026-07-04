@@ -11,6 +11,7 @@
 #include <Arduino.h>
 #include <WebServer.h>
 #include <dirent.h>
+#include <esp_littlefs.h>
 #include <starboard_hal.h>
 #include <starboard_config.h>   // PIN_BUTTONC
 #include "starboard_lua.h"
@@ -68,10 +69,12 @@ static const char PAGE_BLOCKLY[] PROGMEM = R"=====(
   <button onclick="runCode()">&#9654; 运行</button>
   <button onclick="deleteApp()">&#128465; 删除</button>
   <button onclick="openImgDialogForSelected()" style="background:#9C27B0;color:white;border:none;">📷 上传图片</button>
+  <button onclick="openMp3Upload()" style="background:#FF5722;color:white;border:none;">🎵 上传MP3</button>
   <select id="appList" onchange="onAppSelect()">
     <option value="">-- 新建 App --</option>
   </select>
   <span id="status" style="margin-left:16px;color:#666;"></span>
+  <span id="usage" style="float:right;color:#555;font-family:monospace;font-size:13px;padding-top:3px;"></span>
 </div>
 <!-- 图片上传模态对话框 -->
 <div id="imgDialog" style="display:none;position:fixed;z-index:9999;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,0.5);">
@@ -119,6 +122,17 @@ try {
     if (list && list.length) {
       _appOpts = list.map(function(n){ return [n, n]; });
     }
+  }
+} catch(e) {}
+// 同步获取已上传 MP3 列表(/api/mp3list),供「播放MP3」积木下拉选(避免忘文件名)
+var _mp3Opts = [['(暂无,先上传MP3)','bgm.mp3']];
+try {
+  var _xhr2 = new XMLHttpRequest();
+  _xhr2.open('GET', '/api/mp3list', false);   // 同步
+  _xhr2.send();
+  if (_xhr2.status == 200) {
+    var list2 = JSON.parse(_xhr2.responseText);
+    if (list2 && list2.length) _mp3Opts = list2.map(function(n){ return [n, n]; });
   }
 } catch(e) {}
 // 自定义工具箱(starboard API)
@@ -173,6 +187,12 @@ const TOOLBOX = {
     {'kind': 'category', 'name': '数据', 'colour': '#0097A7', 'contents': [
       {'kind': 'block', 'type': 'data_save'},
       {'kind': 'block', 'type': 'data_load'},
+    ]},
+    {'kind': 'category', 'name': '音频', 'colour': '#9C27B0', 'contents': [
+      {'kind': 'block', 'type': 'audio_play'},
+      {'kind': 'block', 'type': 'audio_beep'},
+      {'kind': 'block', 'type': 'audio_stop'},
+      {'kind': 'block', 'type': 'audio_playing'},
     ]},
     {'kind': 'category', 'name': '变量', 'colour': '#E91E63', 'contents': [
       {'kind': 'block', 'type': 'variables_get'},
@@ -278,7 +298,24 @@ Blockly.defineBlocksWithJsonArray([
   {"type":"json_field","message0":"JSON %1 %2 %3","args0":[{"type":"input_value","name":"JSON"},{"type":"field_dropdown","name":"MODE","options":[["取字段","get"],["取数组","array"]]},{"type":"input_value","name":"KEY"}],"inputsInline":true,"output":null,"colour":180,"tooltip":"取字段→单个字符串/数字值；取数组→该数组字段所有字符串元素组成的列表（配合「列表」分类遍历）"},
   {"type":"data_save","message0":"保存数据 %1 为 %2","args0":[{"type":"input_value","name":"KEY"},{"type":"input_value","name":"VAL"}],"inputsInline":true,"previousStatement":null,"nextStatement":null,"colour":160,"tooltip":"持久化保存(重启不丢,按App隔离)。支持文本/数字/列表，列表自动序列化"},
   {"type":"data_load","message0":"读取数据 %1 默认 %2","args0":[{"type":"input_value","name":"KEY"},{"type":"input_value","name":"DEF"}],"inputsInline":true,"output":null,"colour":160,"tooltip":"读取持久化数据,无则返回默认值。默认值类型决定读出类型：默认填数字→数字、默认填文本→文本、默认填空列表→列表"},
+  {"type":"audio_beep","message0":"提示音 频率 %1 Hz 时长 %2 ms","args0":[{"type":"field_number","name":"FREQ","value":1000,"min":20,"max":20000},{"type":"field_number","name":"MS","value":200,"min":0,"max":10000}],"inputsInline":true,"previousStatement":null,"nextStatement":null,"colour":280,"tooltip":"同步提示音(蜂鸣),响完再继续。freq 频率、ms 时长"},
+  {"type":"audio_stop","message0":"停止播放","previousStatement":null,"nextStatement":null,"colour":280,"tooltip":"停止当前播放(异步播放时用)"},
+  {"type":"audio_playing","message0":"正在播放","output":null,"colour":280,"tooltip":"是否正在播放MP3(true/false),配合循环+停止做异步控制"},
 ]);
+// audio_play 用 JS 定义(PATH 是动态下拉,从 _mp3Opts 取已上传 mp3,避免用户记文件名)
+Blockly.Blocks['audio_play'] = {
+  init: function() {
+    this.appendDummyInput()
+      .appendField('播放MP3')
+      .appendField(new Blockly.FieldDropdown(function(){ return _mp3Opts; }), 'PATH')
+      .appendField('音量')
+      .appendField(new Blockly.FieldNumber(15, 0, 21), 'VOL');
+    this.setPreviousStatement(true);
+    this.setNextStatement(true);
+    this.setColour(280);
+    this.setTooltip('异步播放MP3,文件从下拉选(没看到文件就先点工具栏「上传MP3」)。音量0-21');
+  }
+};
 
 // --- 各积木的 Lua 代码生成器 ---
 Blockly.Lua.forBlock['display_beginframe'] = function(b) { return 'display.beginFrame()\n'; };
@@ -437,6 +474,53 @@ Blockly.Lua.forBlock['data_load'] = function(b) {
   var d = Blockly.Lua.valueToCode(b, 'DEF', 0) || '0';
   return ['data.load(' + k + ',' + d + ')', 0];
 };
+// --- 音频积木生成器 ---
+Blockly.Lua.forBlock['audio_play'] = function(b) {
+  var p = (b.getFieldValue('PATH') || 'bgm.mp3').replace(/"/g, '');
+  var v = b.getFieldValue('VOL') || 15;
+  return 'audio.volume(' + v + ')\naudio.play("' + p + '")\n';
+};
+Blockly.Lua.forBlock['audio_beep'] = function(b) {
+  var f = b.getFieldValue('FREQ') || 1000;
+  var ms = b.getFieldValue('MS') || 200;
+  return 'audio.beep(' + f + ',' + ms + ')\n';
+};
+Blockly.Lua.forBlock['audio_stop'] = function(b) { return 'audio.stop()\n'; };
+Blockly.Lua.forBlock['audio_playing'] = function(b) { return ['audio.playing()', 0]; };
+// --- 上传 MP3(选文件后 multipart POST 到 /api/mp3upload,完成刷新状态栏显示已上传列表)---
+function openMp3Upload() {
+  var inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = '.mp3,audio/mpeg';
+  inp.onchange = function() {
+    var f = inp.files[0]; if (!f) return;
+    var fd = new FormData(); fd.append('file', f);
+    document.getElementById('status').innerText = '上传中 ' + f.name + ' ...';
+    fetch('/api/mp3upload', {method:'POST', body: fd})
+      .then(function(r){return r.text();})
+      .then(function(t){
+        document.getElementById('status').innerText = '上传' + (t==='ok'?'成功':'失败') + ': ' + f.name;
+        return fetch('/api/mp3list').then(function(r){return r.json();});
+      })
+      .then(function(list){
+        if (list && list.length) _mp3Opts = list.map(function(n){ return [n, n]; }); // 刷新积木下拉选项
+        document.getElementById('status').innerText += ' | 已上传: ' + (list && list.length ? list.join(', ') : '(无)');
+        refreshUsage(); // 上传后容量变化,刷新右上角
+      })
+      .catch(function(e){ document.getElementById('status').innerText = '上传出错: ' + e; });
+  };
+  inp.click();
+}
+// --- LittleFS 容量显示(右上角)---
+function refreshUsage() {
+  fetch('/api/usage').then(function(r){return r.json();}).then(function(u){
+    var usedKB = Math.round(u.used/1024);
+    var totalKB = Math.round(u.total/1024);
+    var pct = u.total ? Math.round(u.used*100/u.total) : 0;
+    var el = document.getElementById('usage');
+    if (el) el.innerText = 'LittleFS ' + usedKB + '/' + totalKB + ' KB (' + pct + '%)';
+  }).catch(function(){});
+}
+refreshUsage(); // 页面加载显示一次
 
 // --- 代码生成 ---
 function generateCode() {
@@ -979,6 +1063,79 @@ static void handleApiDelete()
     server.send(200, "text/plain", "deleted: " + name);
 }
 
+// ---------- MP3 文件上传/列表(音频积木用)----------
+static FILE *s_mp3F = nullptr;
+
+// 上传回调:Arduino WebServer 四参重载,multipart 文件字段分块到达时调用,直写 /littlefs/<名>.mp3
+static void handleMp3UploadUpload()
+{
+    HTTPUpload &u = server.upload();
+    if (u.status == UPLOAD_FILE_START)
+    {
+        // 文件名安全过滤:拒含路径分隔符(防路径遍历)
+        if (strchr(u.filename.c_str(), '/') || strchr(u.filename.c_str(), '\\'))
+        { s_mp3F = nullptr; return; }
+        char path[128];
+        snprintf(path, sizeof(path), "/littlefs/%s", u.filename.c_str());
+        s_mp3F = fopen(path, "wb");
+        Serial.printf("[Web] MP3 上传开始: %s\n", path);
+    }
+    else if (u.status == UPLOAD_FILE_WRITE)
+    {
+        if (s_mp3F) fwrite(u.buf, 1, u.currentSize, s_mp3F);
+    }
+    else if (u.status == UPLOAD_FILE_END)
+    {
+        if (s_mp3F) { fclose(s_mp3F); s_mp3F = nullptr; }
+        Serial.println("[Web] MP3 上传完成");
+    }
+}
+// 上传完成后的最终响应
+static void handleApiMp3Upload()
+{
+    updateActivity();
+    server.send(200, "text/plain", s_mp3F ? "failed" : "ok");
+}
+// 列出 /littlefs 下所有 .mp3(供前端显示/积木选文件)
+static void handleApiMp3List()
+{
+    updateActivity();
+    String json = "[";
+    bool first = true;
+    DIR *dir = opendir("/littlefs");
+    if (dir)
+    {
+        struct dirent *ent;
+        while ((ent = readdir(dir)) != nullptr)
+        {
+            const char *nm = ent->d_name;
+            size_t len = strlen(nm);
+            if (len < 4) continue;
+            const char *e = nm + len - 4; // 检查 .mp3 后缀(不区分大小写,手写避免 strcasecmp 依赖)
+            if (!(e[0] == '.' && (e[1] == 'm' || e[1] == 'M') && (e[2] == 'p' || e[2] == 'P') && e[3] == '3')) continue;
+            if (!first) json += ",";
+            json += "\"";
+            json += nm;
+            json += "\"";
+            first = false;
+        }
+        closedir(dir);
+    }
+    json += "]";
+    server.send(200, "application/json", json);
+}
+
+// LittleFS 分区容量(右上角显示用):total/used 字节
+static void handleApiUsage()
+{
+    updateActivity();
+    size_t total = 0, used = 0;
+    esp_littlefs_info("spiffs", &total, &used);
+    char json[96];
+    snprintf(json, sizeof(json), "{\"total\":%u,\"used\":%u}", (unsigned)total, (unsigned)used);
+    server.send(200, "application/json", json);
+}
+
 // ---------- 公共接口 ----------
 
 void startBlocklyServer()
@@ -992,6 +1149,9 @@ void startBlocklyServer()
     server.on("/api/save", HTTP_POST, handleApiSave);
     server.on("/api/run", handleApiRun);
     server.on("/api/delete", handleApiDelete);
+    server.on("/api/mp3upload", HTTP_POST, handleApiMp3Upload, handleMp3UploadUpload); // 四参重载:finalFn + uploadFn
+    server.on("/api/mp3list", handleApiMp3List);
+    server.on("/api/usage", handleApiUsage);
 
     server.begin();
     lastClientActivityMs = millis();

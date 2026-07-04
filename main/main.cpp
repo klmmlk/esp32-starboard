@@ -14,6 +14,7 @@
 #include <starboard_display.h>
 #include <starboard_gui.h>
 #include <starboard_app.h>
+#include <starboard_audio.h>
 #include "apps/apps.h"
 #include <lua_app_wrapper.h>
 
@@ -22,6 +23,7 @@ extern "C" void app_main()
     initArduino();
     hal.init();          // 不含 WiFi(阶段3 起 WiFi 按需:OOBE 配网 / 天气 App 才调 hal.wifiInit)
     display_init();
+    audio.init();        // MAX98357A I2S(须在 display_init 后:接管 GPIO13,屏幕 MISO 未接无影响)
     GUI::initInput();    // busy callback 防丢键:全刷期间按键进缓冲,GUI/App 消费;且周期喂狗(见实现)
 
     registerBuiltinApps(); // 注册内置 App + 设 home
