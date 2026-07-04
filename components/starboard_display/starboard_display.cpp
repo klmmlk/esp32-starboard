@@ -27,6 +27,11 @@ static volatile bool g_hibernatingInProgress = false;   // 闸门:hibernate() �
 
 void display_init()
 {
+    // 显式 pinMode 屏幕 SPI 控制脚为 OUTPUT(GxEPD2 内部 digitalWrite 之前需先设,
+    // 否则 arduino-esp32 3.x periman 报 "IO x is not set as GPIO")。
+    pinMode(CONFIG_SPI_CS, OUTPUT);
+    pinMode(CONFIG_PIN_DC, OUTPUT);
+    pinMode(CONFIG_PIN_RST, OUTPUT);
     display.init(115200);   // 参数=诊断日志波特率(顺带初始化 Serial)
     // setRotation 由 appManager.run() 从 NVS 读,screen_orient 设置才生效;这里不设默认
     display.setTextColor(COL_NORMAL);
