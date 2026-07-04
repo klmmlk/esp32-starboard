@@ -161,7 +161,6 @@ const TOOLBOX = {
     {'kind': 'category', 'name': 'App', 'colour': '#FF9800', 'contents': [
       {'kind': 'block', 'type': 'appmanager_gotoapp'},
       {'kind': 'block', 'type': 'appmanager_goback'},
-      {'kind': 'block', 'type': 'appmanager_setwakeupsec'},
     ]},
     {'kind': 'category', 'name': '时间', 'colour': '#9C27B0', 'contents': [
       {'kind': 'block', 'type': 'hal_timefield'},
@@ -176,6 +175,8 @@ const TOOLBOX = {
     ]},
     {'kind': 'category', 'name': '系统', 'colour': '#607D8B', 'contents': [
       {'kind': 'block', 'type': 'sys_yield'},
+      {'kind': 'block', 'type': 'appmanager_setwakeupsec'},
+      {'kind': 'block', 'type': 'appmanager_wakeup_daily'},
     ]},
     {'kind': 'category', 'name': 'HTTP', 'colour': '#607D8B', 'contents': [
       {'kind': 'block', 'type': 'hal_wificonnect'},
@@ -283,6 +284,7 @@ Blockly.defineBlocksWithJsonArray([
   {"type":"gui_msgbox_yn","message0":"确认框 标题:%1 内容:%2","args0":[{"type":"input_value","name":"TITLE"},{"type":"input_value","name":"MSG"}],"inputsInline":true,"previousStatement":null,"colour":210},
   {"type":"appmanager_goback","message0":"返回上层App","previousStatement":null,"colour":330},
   {"type":"appmanager_setwakeupsec","message0":"设唤醒秒数 %1","args0":[{"type":"input_value","name":"SEC","value":60}],"previousStatement":null,"colour":330},
+  {"type":"appmanager_wakeup_daily","message0":"定时唤醒 每天 %1 时 %2 分","args0":[{"type":"field_number","name":"H","value":0,"min":0,"max":23},{"type":"field_number","name":"M","value":0,"min":0,"max":59}],"inputsInline":true,"previousStatement":null,"nextStatement":null,"colour":330,"tooltip":"设每天指定时刻定时唤醒(深睡 timer,自动算到下一个该时刻的秒数)。配合「唤醒键」积木判断:wakeupKey=0 表示定时唤醒(非按键)。定时唤醒会跳过保持期静默深睡,适合后台数据更新"},
   {"type":"hal_timefield","message0":"获取时间 %1","args0":[{"type":"field_dropdown","name":"F","options":[["年","year"],["月","month"],["日","day"],["时","hour"],["分","min"],["秒","sec"],["星期","wday"]]}],"output":null,"colour":290,"tooltip":"读取指定时间字段(自动刷新)"},
   {"type":"common_delay","message0":"延时(毫秒) %1","args0":[{"type":"input_value","name":"MS"}],"previousStatement":null,"nextStatement":null,"colour":290},
   {"type":"hal_millis","message0":"开机毫秒数","output":null,"colour":290,"tooltip":"用于空闲超时判断"},
@@ -419,6 +421,18 @@ Blockly.Lua.forBlock['appmanager_goback'] = function(b) { return 'appManager.goB
 Blockly.Lua.forBlock['appmanager_setwakeupsec'] = function(b) {
   var s = Blockly.Lua.valueToCode(b, 'SEC', 0) || '60';
   return 'appManager.setWakeupSec(' + s + ')\n';
+};
+Blockly.Lua.forBlock['appmanager_wakeup_daily'] = function(b) {
+  var h = b.getFieldValue('H');
+  var m = b.getFieldValue('M');
+  // 算"现在 → 下一个 HH:MM"的秒数,设 timer 唤醒。配合「定时唤醒跳过保持期」实现静默精确唤醒。
+  var code = 'do\n';
+  code += '  local _h,_m,_s = hal.timeField("hour"),hal.timeField("min"),hal.timeField("sec")\n';
+  code += '  local _diff = (' + h + '*3600+' + m + '*60) - (_h*3600+_m*60+_s)\n';
+  code += '  if _diff <= 0 then _diff = _diff + 86400 end\n';
+  code += '  appManager.setWakeupSec(_diff)\n';
+  code += 'end\n';
+  return code;
 };
 Blockly.Lua.forBlock['hal_timefield'] = function(b) {
   var f = b.getFieldValue('F');

@@ -259,6 +259,10 @@ void AppManager::run()
     //      不再在此特判;按键重画的 setup 会经 busy callback 自动打戳重置计时。
     //    - 期间任意键:若中键长按→列表;若短按/其他键→重画当前 App(setup 自动唤醒屏幕)
     //    - 重画后重置超时重新保持
+    // 定时唤醒(timer,即 wakeupButton==-1 的深睡唤醒)跳过保持期直接深睡:
+    // 后台更新任务不需亮屏交互,且消除保持期 ~60s 导致的唤醒漂移。
+    // 按键唤醒(用户要看/操作)照常走保持期。
+    if (!(hal.wakeUpFromDeepSleep && hal.wakeupButton == -1))
     {
         unsigned long staySec = (unsigned long)hal.pref.getInt("sleep_to", 60);
         if (staySec < 10) staySec = 10;
