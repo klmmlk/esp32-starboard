@@ -172,7 +172,9 @@ void Audio::doTone()
     {
         for (int i = 0; i < BLOCK; i += 2)
         {
-            int16_t s = (int16_t)((int32_t)sineTable[(phaseAcc >> 24) & 0xFF] * (int32_t)volume / 21);
+            int32_t s32 = (int32_t)sineTable[(phaseAcc >> 24) & 0xFF] * (int32_t)volume * gain / 21;
+            if (s32 > 32767) s32 = 32767; else if (s32 < -32768) s32 = -32768;
+            int16_t s = (int16_t)s32;
             buf[i] = s; buf[i + 1] = s;
             phaseAcc += phaseStep;
         }
@@ -248,7 +250,9 @@ void Audio::doPlayMp3()
         {
             for (int i = 0; i < info.outputSamps; i++)
             {
-                short s = (short)((int32_t)outBuf[i] * volume / 21);
+                int32_t s32 = (int32_t)outBuf[i] * volume * gain / 21;
+                if (s32 > 32767) s32 = 32767; else if (s32 < -32768) s32 = -32768;
+                short s = (short)s32;
                 stereo[i * 2] = s; stereo[i * 2 + 1] = s;
             }
             stereoSamps = info.outputSamps * 2;
@@ -256,7 +260,11 @@ void Audio::doPlayMp3()
         else
         {
             for (int i = 0; i < info.outputSamps; i++)
-                stereo[i] = (short)((int32_t)outBuf[i] * volume / 21);
+            {
+                int32_t s32 = (int32_t)outBuf[i] * volume * gain / 21;
+                if (s32 > 32767) s32 = 32767; else if (s32 < -32768) s32 = -32768;
+                stereo[i] = (short)s32;
+            }
             stereoSamps = info.outputSamps;
         }
         size_t written = 0;

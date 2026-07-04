@@ -56,6 +56,7 @@ private:
     uint32_t toneMs = 200;
     char mp3Path[96] = {0};
     uint8_t volume = 12;
+    uint8_t gain = 2;   // 软件增益(PCM 放大倍数,放大后削波;>1 更响但易失真)
     int16_t sineTable[256] = {0};
     bool i2sInited = false;       // I2S 通道是否已 init_std_mode(只能调一次)
     uint32_t curRate = 0;         // 当前采样率(换率用 reconfig_std_clock,不重复 init)
