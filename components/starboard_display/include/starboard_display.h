@@ -41,13 +41,18 @@ extern U8G2_FOR_ADAFRUIT_GFX u8g2;
  *               + setFont(CN_FONT_MAIN)。
  */
 void display_init();
-/** 刷完进入深睡省电(对应 GxEPD2 的 hibernate);之后再刷新需重新 display_init()。 */
+/** 刷完进入深睡省电(对应 GxEPD2 的 hibernate);之后再刷新需先 display_wakeIfNeeded() 唤醒。 */
 void display_deinit();
 
-// ---- 屏幕空闲休眠(电子纸 bistable:关驱动 IC 不改显示内容,纯省电,下次刷新自动恢复)----
+// ---- 屏幕空闲休眠(电子纸 bistable:关驱动 IC 不改显示内容,纯省电)----
 // 由 busy callback 打戳 + 各长驻循环协作触发,详见 starboard_display.cpp。
+// ⚠️ hibernate 后 GxEPD2 的 nextPage/refresh 【不会】自动 reset/_InitDisplay,直接刷会卡死在
+//    _waitWhileBusy(屏幕仍 deep sleep,BUSY 不复位)。故刷新前必须 display_wakeIfNeeded() 唤醒。
 void display_notifyRefresh();                           // 刷新打戳(busy callback 内调,勿直接用)
 bool display_idleHibernate(unsigned long idleSec = 10); // 距上次刷新>idleSec 则 hibernate;返回是否刚进入休眠
+/** 若屏幕已空闲休眠(hibernate),重新 init 唤醒(reset+_InitDisplay+_PowerOn);未休眠则幂等返回。
+ *  任何「display_idleHibernate 之后、刷新之前」的路径都必须先调用,否则 _waitWhileBusy 卡死看门狗。 */
+void display_wakeIfNeeded();
 
 // ---- 中文字体(默认主字体)----
 // wqy16_t_gb2312 是本库里【唯一同时含 ASCII + 全 GB2312 汉字】的字体(318KB)。

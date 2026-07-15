@@ -10,8 +10,8 @@ CONFIG_FREERTOS_HZ=1000
 
 # ----------------------------- Flash / 分区表 ---------------------------------
 # Flash 8MB(若不是 8MB,改这里 + partitions.csv)
-CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
-CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 
 # 使用自定义分区表(根目录 partitions.csv)
 CONFIG_PARTITION_TABLE_CUSTOM=y

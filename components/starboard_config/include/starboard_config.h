@@ -44,9 +44,11 @@
 #define PIN_BUTTONL 4 //  左键(数字-/返回)
 #define PIN_BUTTONC 5 //   中键(确认)
 #define PIN_BUTTONR 6 //   右键(数字+)
-// 按键有效电平:true=按下读到低电平(常见接法),false=按下读到高电平。
-// LiClock 会自动检测;S3 上先用固定值,实测后改。
-#define BUTTON_ACTIVE_LOW true
+// 按键有效电平:正式板 SW1 拨轮是「R5(10kΩ)上拉到3V3 + R6/R7/R11(100kΩ)下拉到GND」分压电路,
+// 按下=高电平(active-high),故 activeLow=false。
+// 配合 starboard_hal.h 里 OneButton 的 pullupActive=false(禁用内部上拉),
+// 否则内部上拉与外部100kΩ下拉分压得 ~2.27V 落入逻辑不确定区,导致电平抖动/误判。
+#define BUTTON_ACTIVE_LOW false
 
 // ----------------------------- 电池/充电 ⚠️占位待改(暂可不用) ---------------------------
 // LiClock: PIN_ADC=33(S3 不可用),充电=26(S3 不可用,且26被PSRAM占)。

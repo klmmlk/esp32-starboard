@@ -89,7 +89,7 @@ public:
             {
                 // Lua 刚执行完。若被「中键长按3秒」强停,此时用户可能仍按住中键,
                 // 直接进入下方的中键退出检测会误触退出 → 先等中键释放再继续。
-                while (digitalRead(PIN_BUTTONC) == LOW)
+                while (digitalRead(PIN_BUTTONC) == HIGH)
                     delay(20);
                 // Lua 若调了 gotoApp(设了 pendingSwitch),退出 Web IDE,让 appManager
                 // 主循环消费切换——否则 web IDE 占着主线程,切换请求永远不生效。
@@ -106,10 +106,10 @@ public:
             }
 
             // 中键退出
-            if (digitalRead(PIN_BUTTONC) == LOW)
+            if (digitalRead(PIN_BUTTONC) == HIGH)
             {
                 delay(50);
-                if (digitalRead(PIN_BUTTONC) == LOW)
+                if (digitalRead(PIN_BUTTONC) == HIGH)
                 {
                     drawStatus("已退出", "返回 App 列表");
                     delay(1000);

@@ -93,8 +93,8 @@ public:
         else
         {
             drawOtaScreen("升级失败", esp_err_to_name(ret), "按中键退出");
+            while (digitalRead(PIN_BUTTONC) == LOW) { delay(50); }
             while (digitalRead(PIN_BUTTONC) == HIGH) { delay(50); }
-            while (digitalRead(PIN_BUTTONC) == LOW)  { delay(50); }
             appManager.goBack();
         }
     }

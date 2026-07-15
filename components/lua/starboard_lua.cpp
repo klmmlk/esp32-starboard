@@ -59,7 +59,7 @@ bool luaSysPollStop()
     display_idleHibernate();   // 屏幕空闲>10s 关驱动省电(不门控 suppressSleep:Web IDE 挂着也要关屏)
     if (!g_luaRunning) return false;
     // 活动刷新:任意键按下 = 用户在操作(digitalRead 物理电平,不消费事件队列)
-    if (digitalRead(PIN_BUTTONL) == LOW || digitalRead(PIN_BUTTONC) == LOW || digitalRead(PIN_BUTTONR) == LOW)
+    if (digitalRead(PIN_BUTTONL) == HIGH || digitalRead(PIN_BUTTONC) == HIGH || digitalRead(PIN_BUTTONR) == HIGH)
         g_lastActivityMs = millis();
     // (1) 无操作超时 → 深睡(Web IDE 模式 suppressSleep 跳过)
     if (!g_luaSuppressSleep && (millis() - g_lastActivityMs > g_sleepToSec * 1000UL))
@@ -69,7 +69,7 @@ bool luaSysPollStop()
         return true;
     }
     // (2) 中键长按 >1s → 退出(边沿计时:短按<1s 松开后重置,不误触)
-    if (digitalRead(PIN_BUTTONC) == LOW)
+    if (digitalRead(PIN_BUTTONC) == HIGH)
     {
         if (!g_cTiming) { g_cTiming = true; g_cStart = millis(); }
         else if (millis() - g_cStart >= C_EXIT_HOLD_MS)

@@ -18,8 +18,10 @@ StarboardDisplay display(
 U8G2_FOR_ADAFRUIT_GFX u8g2;
 
 // ---- 屏幕空闲休眠状态机 ----
-// 电子纸 bistable:关驱动 IC(display.hibernate)不改显示、纯省电;下次刷新由 GxEPD2 内部
-// _InitDisplay→_reset 自动唤醒恢复,对 App 透明。display 层只管"距上次刷新时间 + 是否已休眠"。
+// 电子纸 bistable:关驱动 IC(display.hibernate)不改显示、纯省电。
+// ⚠️ hibernate 后 GxEPD2 的 nextPage/refresh 不会自动 reset/_InitDisplay,直接刷会卡死在
+//    _waitWhileBusy(屏幕仍 deep sleep,BUSY 不复位)。刷新前必须 display_wakeIfNeeded() 重新 init。
+//    display 层只管"距上次刷新时间 + 是否已休眠",唤醒责任在调用方(刷新前)。
 static volatile unsigned long g_lastRefreshMs = 0;       // 最后一次刷新(busy)时刻
 static volatile bool g_isHibernate = false;             // 当前是否已 hibernate(防重复 + 幂等)
 static volatile bool g_hibernatingInProgress = false;   // 闸门:hibernate() 内部 _PowerOff 也会触发
@@ -75,4 +77,19 @@ bool display_idleHibernate(unsigned long idleSec)
     g_isHibernate = true;
     Serial.println("[DISP] idle hibernate (driver off)");  // 诊断:进入空闲休眠
     return true;
+}
+
+// hibernate 后刷新前的唤醒:GxEPD2 的 nextPage/refresh 不会自动 _reset/_InitDisplay,直接刷会卡死在
+// _waitWhileBusy(实测保持期按键重画触发看门狗复位)。任何「idleHibernate 之后、刷新之前」的路径
+// (setup 重画 / GUI::menu / 弹窗)都要先调本函数重新 init 屏幕。
+void display_wakeIfNeeded()
+{
+    if (!g_isHibernate) return; // 幂等:未休眠直接返回
+    pinMode(CONFIG_SPI_CS, OUTPUT);
+    pinMode(CONFIG_PIN_DC, OUTPUT);
+    pinMode(CONFIG_PIN_RST, OUTPUT);
+    display.init(115200); // re-init:硬件 reset + _InitDisplay + _PowerOn,把 deep sleep 的屏幕唤醒
+    g_isHibernate = false;
+    g_lastRefreshMs = millis();
+    Serial.println("[DISP] wake from hibernate (re-init driver)");
 }

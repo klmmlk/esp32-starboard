@@ -25,7 +25,32 @@
       "Bash(git -C /d/idf diff --stat --ignore-cr-at-eol)",
       "Bash(git commit *)",
       "Bash(git merge *)",
-      "Bash(awk '{print $2}')"
+      "Bash(awk '{print $2}')",
+      "Bash(git diff *)",
+      "Bash(git config *)",
+      "Bash(git commit .gitattributes -m 'chore: 添加 .gitattributes 统一源码行尾为 LF,根治 CRLF/LF *)",
+      "Bash(git commit -- components/starboard_display components/starboard_gui/starboard_gui.cpp main/apps/appWebIDE.cpp components/lua/starboard_lua.cpp components/starboard_app/starboard_app.cpp -m 'feat: 屏幕驱动空闲休眠 —— 距上次刷新>10s 自动关驱动省电' -m '电子纸 bistable,关驱动 IC 不改显示内容、纯省电。原 hibernate 只在保持期触发,而 Web IDE/Lua 等长驻 App 的 setup 永不返回 → 走不到保持期 → 屏幕驱动永不休眠。 *)",
+      "Bash(git branch *)",
+      "Bash(git commit -m ' *)",
+      "Bash(head -50 \"D:/Onedrive/OneDrive - MSFT/PCB学习/点阵字库生成软件/Output/Pinyin_36.c\")",
+      "Read(//d/Onedrive/OneDrive - MSFT/PCB学习/点阵字库生成软件/Output/**)",
+      "Bash(head -30 \"D:/Onedrive/OneDrive - MSFT/PCB学习/点阵字库生成软件/Output/Pinyin_36.map\")",
+      "Bash(python3)",
+      "Bash(python3 d:/idf/fix_pinyin.py)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(py -3 d:/idf/fix_pinyin.py)",
+      "Bash(python3 -c \"f=open\\('d:/idf/components/U8g2_for_Adafruit_GFX/pinyin_36.c','rb'\\); data=f.read\\(\\); f.close\\(\\); print\\('len',len\\(data\\)\\); idx=data.find\\(b'*/\\\\r\\\\nconst'\\); print\\('idx of */ crlf const:', idx\\); idx2=data.find\\(b'*/\\\\nconst'\\); print\\('idx of */ lf const:', idx2\\)\")",
+      "Read(//d/Onedrive/OneDrive - MSFT/PCB学习/点阵字库生成软件/Output//**)",
+      "Bash(grep -iv \"config\\\\|//\\\\|\\\\.h:\")",
+      "Bash(grep -rn \"Pinyin_36\\\\|pinyin36\\\\|pinyin_36\" components/ main/ --include=\"*.c\" --include=\"*.cpp\" --include=\"*.h\")",
+      "Bash(grep -rn \"Pinyin_72\\\\|pinyin72\" components/ main/ --include=\"*.c\" --include=\"*.cpp\" --include=\"*.h\")",
+      "Bash(grep -iE \"webide|blockly|block|\\\\.js$|\\\\.html$\")",
+      "Bash(git push *)",
+      "Bash(git commit -m 'feat: 冷启动NTP校时 + http.get超时 + 唤醒键API/积木 + 修复覆盖烧录显示名 + 移除NTP间隔设置' -m '- hal: 冷启动时间持久化兜底\\(NVS\\)+后台NTP修正,深睡唤醒靠RTC走时不重复联网 *)",
+      "Bash(git commit -m 'fix: 唤醒键改为消费式读取,修复循环里重复触发' -m '- lua_hal: hal.wakeupKey\\(\\) 读完清零 wakeupButton,同回合内只返回一次唤醒键\\(之后返回0\\) *)"
+    ],
+    "additionalDirectories": [
+      "D:\\Onedrive\\OneDrive - MSFT\\PCBѧϰ\\�����ֿ���������\\Output"
     ]
   }
 }

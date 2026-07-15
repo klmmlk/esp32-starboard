@@ -1,0 +1,12 @@
+{
+  "source": "embed-ai-tool",
+  "version": "7684d0e",
+  "installed_at": "2026-07-10T08:26:31.659831+00:00",
+  "skills": [
+    "build-idf",
+    "flash-idf",
+    "memory-analysis",
+    "serial-monitor",
+    "workflow"
+  ]
+}

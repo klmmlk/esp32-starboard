@@ -15,6 +15,7 @@
 #include <sys/time.h>        // settimeofday(冷启动从 NVS 恢复系统时间)
 #include <starboard_display.h> // display.hibernate(深睡前关屏幕驱动电源)
 #include <esp_littlefs.h>       // LittleFS VFS 挂载
+#include <esp_log.h>            // esp_log_level_set(降 wifi 日志,避免淹没 Serial)
 
 // 深睡唤醒计数(存 RTC 慢速内存,跨深睡保留)。M5 验证 RTC 内存保留用。
 RTC_DATA_ATTR uint32_t bootCount = 0;
@@ -69,6 +70,12 @@ void HAL::init()
 {
     Serial.begin(115200);
     delay(100);
+    // WiFi 连不上时驱动 INFO 日志(auth/scan/new channel)高频刷屏,淹没 Arduino Serial.println
+    // (UART TX 竞争致 [HAL]/[APP] 输出丢失)。降到 WARN:仅留认证失败等关键错误,Serial 重现可见。
+    esp_log_level_set("wifi", ESP_LOG_WARN);
+    esp_log_level_set("pp", ESP_LOG_WARN);
+    esp_log_level_set("net80211", ESP_LOG_WARN);
+    esp_log_level_set("smartconfig", ESP_LOG_WARN);
     Serial.println();
     Serial.println("================ starboard_hal init ================");
 
@@ -194,18 +201,19 @@ void HAL::goSleep(uint32_t sec)
     // hibernate 后屏幕不耗电;深睡后 ESP32 也断电,全机微安级待机
     // (M3 起:WiFi 已连则在此 esp_wifi_stop())
 
-    // 三个唤醒引脚开 RTC IO 内部上拉(active-low: 空闲靠上拉维持高,按下变低 → ANY_LOW 唤醒)。
-    // 注意:OneButton 设的数字 GPIO INPUT_PULLUP 在深睡时随数字域断电失效,
-    // 必须另开 RTC IO 上拉并保 RTC_PERIPH 供电,否则引脚浮空、唤醒不可靠。
+    // 三个唤醒引脚开 RTC IO 内部下拉(active-high: 空闲靠外部100kΩ下拉维持低,按下变高 → ANY_HIGH 唤醒)。
+    // 注意:OneButton 禁用了内部上拉(pullupActive=false),数字 GPIO 在深睡时随数字域断电失效,
+    // 必须另开 RTC IO 下拉并保 RTC_PERIPH 供电,否则引脚浮空、唤醒不可靠。
+    // 按下时外部 3V3 经 R5(10kΩ)→SW1触点给引脚上拉至 ~3V(需深睡期间 3V3 LDO 保持供电)。
     for (int p : {PIN_BUTTONL, PIN_BUTTONC, PIN_BUTTONR})
     {
-        rtc_gpio_pullup_en((gpio_num_t)p);
-        rtc_gpio_pulldown_dis((gpio_num_t)p);
+        rtc_gpio_pulldown_en((gpio_num_t)p);
+        rtc_gpio_pullup_dis((gpio_num_t)p);
     }
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 
     uint64_t mask = (1ULL << PIN_BUTTONL) | (1ULL << PIN_BUTTONC) | (1ULL << PIN_BUTTONR);
-    esp_sleep_enable_ext1_wakeup(mask, ESP_EXT1_WAKEUP_ANY_LOW);
+    esp_sleep_enable_ext1_wakeup(mask, ESP_EXT1_WAKEUP_ANY_HIGH);
     if (sec)
         esp_sleep_enable_timer_wakeup((uint64_t)sec * 1000000ULL);
 
@@ -224,6 +232,28 @@ void HAL::goSleep(uint32_t sec)
 // wifiInit(首次/开机配网)走 STA_START 自动分支;wifiReprov 自己显式启 SmartConfig,
 // 要抑制自动分支(否则会启两个 SmartConfig,第二个返回 -1 ESP_ERR_WIFI_CONN)。
 static bool allowAutoSmartconfig = true;
+
+// WiFi 异步重连:STA_DISCONNECTED 事件回调跑在 sys_evt(event loop)任务上,
+// 绝不能在其中 vTaskDelay 或直接 esp_wifi_connect——前者阻塞 event loop 饿死 IDLE0 看门狗,
+// 后者在「断开中再连」易致 esp_wifi_connect_internal 卡死(实测 ~29s 触发 TWDT 复位)。
+// 改为仅置标志,由独立任务 wifiReconnectTask 消费(任务内 vTaskDelay 安全;且即使
+// esp_wifi_connect 卡住也只阻塞该任务,不再拖垮 event loop / IDLE)。
+static volatile bool g_wifiNeedReconnect = false;
+static uint32_t g_wifiBackoffMs = 500;
+
+static void wifiReconnectTask(void *)
+{
+    for (;;)
+    {
+        if (g_wifiNeedReconnect)
+        {
+            g_wifiNeedReconnect = false;
+            vTaskDelay(pdMS_TO_TICKS(g_wifiBackoffMs));
+            esp_wifi_connect();
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
 
 static void ntpSyncCb(struct timeval *tv)
 {
@@ -273,14 +303,14 @@ static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
             hal.wifiState = HAL::WifiState::Idle;
             // 退避重连:失败次数递增到上限就停,不再疯狂 esp_wifi_connect 刷屏。
             // reason 见 WIFI_REASON_*;密码错/找不到 AP 会持续失败,退避后等下次唤醒再试。
+            // ⚠️ 不在此处 delay/直连(见上方 wifiReconnectTask 注释):只置标志,异步重连。
             if (wifiReconnectFail < WIFI_RECONNECT_MAX_FAIL)
             {
                 wifiReconnectFail++;
-                uint32_t backoff = 500UL * wifiReconnectFail; // 0.5s,1s,1.5s...线性退避
-                Serial.printf("[HAL] WiFi 断开,退避 %lums 后重连(第 %u 次)...\n",
-                              (unsigned long)backoff, wifiReconnectFail);
-                vTaskDelay(pdMS_TO_TICKS(backoff));
-                esp_wifi_connect();
+                g_wifiBackoffMs = 500UL * wifiReconnectFail; // 0.5s,1s,1.5s...线性退避
+                Serial.printf("[HAL] WiFi 断开,%lums 后异步重连(第 %u 次)...\n",
+                              (unsigned long)g_wifiBackoffMs, wifiReconnectFail);
+                g_wifiNeedReconnect = true;
             }
             else if (wifiReconnectFail == WIFI_RECONNECT_MAX_FAIL)
             {
@@ -367,6 +397,12 @@ static void wifiEnsureInit()
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
     wifiDrvInited = true;
+    static bool reconnectTaskStarted = false; // wifiEnsureInit 幂等,任务只起一次
+    if (!reconnectTaskStarted)
+    {
+        reconnectTaskStarted = true;
+        xTaskCreate(wifiReconnectTask, "wifi_reconn", 4096, nullptr, 2, nullptr);
+    }
     Serial.println("[HAL] WiFi 驱动已初始化");
 }
 

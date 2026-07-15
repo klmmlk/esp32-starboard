@@ -168,7 +168,7 @@ class LuaApp : public AppBase
         {
             // EXIT(中键长按)或 NONE(脚本自然结束)。
             // 先等中键松开,避免 openSelector 的 menu 立刻收到残留中键事件
-            while (digitalRead(PIN_BUTTONC) == LOW) delay(10);
+            while (digitalRead(PIN_BUTTONC) == HIGH) delay(10);
             delay(50);
             // 若脚本已主动 gotoApp/goBack(pending 已设),尊重脚本意图,不再 requestSelector
             // —— 否则 pendingSelector 残留,会在下个 App 的 setup 后误触发 openSelector(列表)

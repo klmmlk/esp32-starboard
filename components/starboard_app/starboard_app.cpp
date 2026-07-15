@@ -196,7 +196,7 @@ void AppManager::run()
         bool longPress = false;
         for (;;)
         {
-            if (digitalRead(PIN_BUTTONC) == LOW)
+            if (digitalRead(PIN_BUTTONC) == HIGH)
             {
                 if (millis() - pressStart >= 500) { longPress = true; break; }
                 delay(10);
@@ -207,7 +207,7 @@ void AppManager::run()
         if (longPress)
         {
             // 等键完全松再弹列表(否则 GUI::menu 入口 keyBuf 空,waitKeyEvent 等不到事件)
-            while (digitalRead(PIN_BUTTONC) == LOW) delay(10);
+            while (digitalRead(PIN_BUTTONC) == HIGH) delay(10);
             delay(50); // 防抖
             openSelector(); // 内部 GUI::menu 阻塞;选中则设 pendingSwitch
         }
@@ -271,27 +271,28 @@ void AppManager::run()
 
         while (millis() - stayStart < stayMax)
         {
-            bool l = digitalRead(PIN_BUTTONL) == LOW;
-            bool c = digitalRead(PIN_BUTTONC) == LOW;
-            bool r = digitalRead(PIN_BUTTONR) == LOW;
+            bool l = digitalRead(PIN_BUTTONL) == HIGH;
+            bool c = digitalRead(PIN_BUTTONC) == HIGH;
+            bool r = digitalRead(PIN_BUTTONR) == HIGH;
 
             if (l || c || r)
             {
                 hal.pauseButtons = true;
+                display_wakeIfNeeded(); // 接下来要刷新(列表/重画);保持期可能已 idleHibernate 关驱动,先唤醒否则 _waitWhileBusy 卡死看门狗
 
                 // 中键:长按(>=500ms)→ App 列表,短按→重画
                 if (c)
                 {
                     unsigned long pStart = millis();
                     bool lp = false;
-                    while (digitalRead(PIN_BUTTONC) == LOW)
+                    while (digitalRead(PIN_BUTTONC) == HIGH)
                     {
                         if (millis() - pStart >= 500) { lp = true; break; }
                         delay(10);
                     }
                     if (lp)
                     {
-                        while (digitalRead(PIN_BUTTONC) == LOW) delay(10);
+                        while (digitalRead(PIN_BUTTONC) == HIGH) delay(10);
                         delay(50);
                         hal.pauseButtons = false;
                         openSelector();
@@ -306,7 +307,7 @@ void AppManager::run()
                 }
 
                 // 短按(左/中/右键):等全松,重画当前 App
-                while (digitalRead(PIN_BUTTONL) == LOW || digitalRead(PIN_BUTTONC) == LOW || digitalRead(PIN_BUTTONR) == LOW)
+                while (digitalRead(PIN_BUTTONL) == HIGH || digitalRead(PIN_BUTTONC) == HIGH || digitalRead(PIN_BUTTONR) == HIGH)
                     delay(10);
                 delay(50);
                 hal.pauseButtons = false;

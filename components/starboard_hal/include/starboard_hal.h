@@ -31,10 +31,12 @@ public:
     void update();
 
     // ------------------------- 按键(拨轮三键) -------------------------
-    // OneButton(pin, activeLow)。引脚/有效电平来自 starboard_config。
-    OneButton btnl = OneButton(PIN_BUTTONL, BUTTON_ACTIVE_LOW);
-    OneButton btnc = OneButton(PIN_BUTTONC, BUTTON_ACTIVE_LOW);
-    OneButton btnr = OneButton(PIN_BUTTONR, BUTTON_ACTIVE_LOW);
+    // OneButton(pin, activeLow, pullupActive)。正式板为 active-high 分压电路(外部已有
+    // R5 10kΩ上拉 + 100kΩ下拉),pullupActive 必须传 false:否则内部上拉叠加外部100kΩ下拉,
+    // 松开时分压 ~2.27V 落入逻辑不确定区(高电平阈值~2.475V),导致抖动/误判/卡死。
+    OneButton btnl = OneButton(PIN_BUTTONL, BUTTON_ACTIVE_LOW, false);
+    OneButton btnc = OneButton(PIN_BUTTONC, BUTTON_ACTIVE_LOW, false);
+    OneButton btnr = OneButton(PIN_BUTTONR, BUTTON_ACTIVE_LOW, false);
     /** GUI / appManager 阻塞交互期间置 true:task_hal_update 暂停 tick,防后台按键回调
      *  打断交互(如 GUI 里按左键稍久)。starboard_gui 进出阻塞函数、appManager.run() 检测
      *  长按手势时自动配对切换。isPressing() 不受影响(实时 digitalRead)。 */
