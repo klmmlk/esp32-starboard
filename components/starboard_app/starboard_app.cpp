@@ -12,6 +12,8 @@
 #include <starboard_hal.h>    // hal.wakeUpFromDeepSleep / wakeupButton / goSleep / pauseButtons
 #include <starboard_gui.h>    // GUI::waitLongPress / GUI::menu / menu_item
 #include <starboard_display.h> // display.hibernate(保持期 10 秒后休眠屏幕)
+#include <esp_log.h>           // ESP_LOGI:Arduino Serial.println 在本环境会丢失,诊断改用 ESP_LOGI
+static const char *const APP_TAG = "APP";
 
 // 跨深睡:上次活跃的【可恢复】App 名。冷启动靠 hal.wakeUpFromDeepSleep 门控
 // (冷启动=false → 不读它,直接走 home),避免读到未初始化的 RTC 残留垃圾值。
@@ -173,7 +175,7 @@ void AppManager::run()
         current = resume ? resume : home;
         if (home && current != home)
             appStack.push(home); // goBack 退路:深睡后只重建 home+current 两层
-        Serial.printf("[APP] 恢复 App=%s (唤醒=%s, 键=%d)\n",
+        ESP_LOGI(APP_TAG, "恢复 App=%s (唤醒=%s, 键=%d)\n",
                       current ? current->name : "(null)",
                       hal.wakeUpFromDeepSleep ? "深睡" : "冷启动", hal.wakeupButton);
 
@@ -277,24 +279,30 @@ void AppManager::run()
 
             if (l || c || r)
             {
+                ESP_LOGI(APP_TAG, "btn press: l=%d c=%d r=%d", (int)l, (int)c, (int)r);
                 hal.pauseButtons = true;
                 display_wakeIfNeeded(); // 接下来要刷新(列表/重画);保持期可能已 idleHibernate 关驱动,先唤醒否则 _waitWhileBusy 卡死看门狗
 
                 // 中键:长按(>=500ms)→ App 列表,短按→重画
                 if (c)
                 {
+                    // 长按检测:累计按下时长,容忍按下瞬间的抖动(裸 digitalRead 无消抖,
+                    // 直接 while(C==HIGH) 会被抖动提前退出 → 长按误判为短按 → 进不了列表)。
                     unsigned long pStart = millis();
-                    bool lp = false;
-                    while (digitalRead(PIN_BUTTONC) == HIGH)
+                    unsigned long lastHigh = millis();
+                    while (millis() - pStart < 500)
                     {
-                        if (millis() - pStart >= 500) { lp = true; break; }
+                        if (digitalRead(PIN_BUTTONC) == HIGH) lastHigh = millis();
+                        else if (millis() - lastHigh > 80) break; // 松开>80ms 才算真松(滤抖动)
                         delay(10);
                     }
+                    bool lp = (digitalRead(PIN_BUTTONC) == HIGH); // 500ms 后仍按着 = 长按
                     if (lp)
                     {
                         while (digitalRead(PIN_BUTTONC) == HIGH) delay(10);
                         delay(50);
                         hal.pauseButtons = false;
+                        ESP_LOGI(APP_TAG, "center long-press -> openSelector");
                         openSelector();
                         // 若选中了 App(设了 pendingSwitch),跳回 step3 处理链式切换
                         if (pendingSwitch || pendingBack) goto step3;
@@ -325,14 +333,14 @@ void AppManager::run()
     // 6. 深睡(不返回):app_main 到此结束
     // 6. deepSleep: app_main ends here
     deepSleep();
-    Serial.printf("[APP] keep-alive done, deepSleep(current=%s)\n", current ? current->name : "(null)");
+    ESP_LOGI(APP_TAG, "keep-alive done, deepSleep(current=%s)\n", current ? current->name : "(null)");
 }
 
 void AppManager::deepSleep()
 {
     if (current)
         current->onDeepsleep();
-    Serial.printf("[APP] 进入深睡:下次=%lus 后或按键唤醒,当前 App=%s\n",
+    ESP_LOGI(APP_TAG, "进入深睡:下次=%lus 后或按键唤醒,当前 App=%s\n",
                   (unsigned long)wakeupSec, current ? current->name : "(null)");
     hal.goSleep(wakeupSec); // timer(兜底)+ 按键(ext1)双路,先到先唤醒,不返回
 }

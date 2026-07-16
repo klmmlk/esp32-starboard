@@ -1,7 +1,7 @@
 // appOOBE —— 首次开机引导(欢迎 → SmartConfig 配网 → NTP → 进主时钟)
 //
-// 阶段3 最小版:用 pref "oobe" 计数(0/1/2/3)记进度。一次回合内顺序跑完所有 stage
-// (回合可长:配网轮询最长 5 分钟,期间 app_main 保持唤醒不深睡——符合回合制)。
+// 阶段3 最小版:用 pref "oobe" 计数(0/1/2/3)记进度。一次回合内顺序跑完所有 stage。
+// 配网轮询上限 PROVISION_TIMEOUT_SEC(30s):连不上就进离线主时钟,不干等(避免卡死/耗电)。
 // resumable=false:引导完成不记 lastAppName,直接 gotoApp("clock") 链式进主时钟。
 // showInList=false:不出现在 App 列表(仅开机据 oobe 进度由 begin() 选为 home)。
 //
@@ -12,12 +12,14 @@
 #include <starboard_hal.h>     // hal.wifiInit / wifiState / pref
 #include <starboard_display.h> // display / u8g2 / COL_*
 #include <starboard_gui.h>     // GUI::msgbox
+#include <esp_smartconfig.h>   // esp_smartconfig_stop(配网超时后停 sniffer)
 #include <Arduino.h>
 
 namespace
 {
-// SmartConfig 配网等待上限(秒)。用户用微信「乐鑫 AirKiss」/ ESPTouch 推 WiFi,给足时间。
-constexpr uint32_t PROVISION_TIMEOUT_SEC = 5 * 60;
+// SmartConfig 配网等待上限(秒)。给用户推 WiFi 的时间,但不再干等5分钟(耗电+卡死);
+// 超时仍没连上就进离线主时钟,配网可后续在设置里重新发起(wifiReprov)。
+constexpr uint32_t PROVISION_TIMEOUT_SEC = 30;
 
 // 画一帧占满屏的纯文字引导画面(不走 GUI 弹窗)。最多 4 行,第 3 行用红色强调。
 void drawGuide(const char *l1, const char *l2 = nullptr, const char *l3Alert = nullptr, const char *l4 = nullptr)
@@ -64,7 +66,7 @@ public:
         {
             drawGuide("正在配网...", "微信「乐鑫 AirKiss」", "或 ESPTouch 推 WiFi(仅2.4G)");
             hal.wifiInit(); // 阻塞:已配网直连,否则进 SmartConfig(Provisioning),8s 超时返回
-            // wifiInit 返回时若仍在配网(Provisioning),保持唤醒轮询等连上(最长 5 分钟)。
+            // wifiInit 返回后最多再等 PROVISION_TIMEOUT_SEC 秒;连不上就放弃进离线(不再干等5分钟)。
             uint32_t waited = 0;
             while (hal.wifiState != HAL::WifiState::Connected && waited < PROVISION_TIMEOUT_SEC)
             {
@@ -79,7 +81,8 @@ public:
             }
             else
             {
-                GUI::msgbox("配网", "未连上 WiFi\n进入离线模式(时间显示 --:--)");
+                esp_smartconfig_stop(); // 若 SmartConfig sniffer 仍在跑,停掉避免持续耗电/干扰
+                GUI::msgbox("配网", "未连上 WiFi\n进入离线模式(时间显示 --:--)\n可在设置中重新配网");
                 // 不递增到 2,但下方 stage 2 会把 oobe 置 3,避免每次开机重卡 OOBE。
             }
         }

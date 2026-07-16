@@ -42,8 +42,8 @@
 // ⚠️ GPIO0 是 strap 引脚(上电需为高),若你的按键按下拉低会进下载模式,请换其它。
 //    推荐实测后改成无 strap 冲突的引脚(如 4/5/6 等)。
 #define PIN_BUTTONL 4 //  左键(数字-/返回)
-#define PIN_BUTTONC 5 //   中键(确认)
-#define PIN_BUTTONR 6 //   右键(数字+)
+#define PIN_BUTTONC 6 //   中键(确认)
+#define PIN_BUTTONR 5 //   右键(数字+)
 // 按键有效电平:正式板 SW1 拨轮是「R5(10kΩ)上拉到3V3 + R6/R7/R11(100kΩ)下拉到GND」分压电路,
 // 按下=高电平(active-high),故 activeLow=false。
 // 配合 starboard_hal.h 里 OneButton 的 pullupActive=false(禁用内部上拉),

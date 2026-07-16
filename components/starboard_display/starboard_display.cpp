@@ -4,7 +4,9 @@
 // display 实例从原 main.cpp 抽出,放此组件唯一一处定义,供 main/gui/app 共用。
 
 #include "starboard_display.h"
-#include <Arduino.h>          // Serial(空闲休眠诊断日志)
+#include <Arduino.h>          // Serial(display_init 一次性)
+#include <esp_log.h>          // ESP_LOGI:Serial.println USB 未连接(电池运行)时阻塞,诊断改 ESP_LOGI
+static const char *const DISP_TAG = "DISP";
 
 // ---- 实例定义(唯一一处)----
 // 引脚全部从 starboard_config 取,改引脚只改那个头文件。
@@ -34,7 +36,7 @@ void display_init()
     pinMode(CONFIG_SPI_CS, OUTPUT);
     pinMode(CONFIG_PIN_DC, OUTPUT);
     pinMode(CONFIG_PIN_RST, OUTPUT);
-    display.init(115200);   // 参数=诊断日志波特率(顺带初始化 Serial)
+    display.init(0);   // 0=禁用 GxEPD2 诊断输出(_waitWhileBusy 里的 Serial.print 会阻塞/丢 TX,曾致看门狗);Serial 已在 hal.init 初始化
     // setRotation 由 appManager.run() 从 NVS 读,screen_orient 设置才生效;这里不设默认
     display.setTextColor(COL_NORMAL);
     display.fillScreen(COL_BG);
@@ -62,7 +64,7 @@ void display_notifyRefresh()
     bool wasHibernate = g_isHibernate;
     g_lastRefreshMs = millis();
     g_isHibernate = false;               // 真刷新发生 = 屏已唤醒
-    if (wasHibernate) Serial.println("[DISP] refresh (driver woke up)"); // 诊断:从休眠恢复
+    if (wasHibernate) ESP_LOGI(DISP_TAG, "refresh (driver woke up)"); // 诊断:从休眠恢复
 }
 
 // 屏幕空闲休眠:距上次刷新超过 idleSec 秒(默认 10s)则 hibernate 关驱动省电。
@@ -75,7 +77,7 @@ bool display_idleHibernate(unsigned long idleSec)
     display.hibernate();
     g_hibernatingInProgress = false;
     g_isHibernate = true;
-    Serial.println("[DISP] idle hibernate (driver off)");  // 诊断:进入空闲休眠
+    ESP_LOGI(DISP_TAG, "idle hibernate (driver off)");  // 诊断:进入空闲休眠
     return true;
 }
 
@@ -88,8 +90,8 @@ void display_wakeIfNeeded()
     pinMode(CONFIG_SPI_CS, OUTPUT);
     pinMode(CONFIG_PIN_DC, OUTPUT);
     pinMode(CONFIG_PIN_RST, OUTPUT);
-    display.init(115200); // re-init:硬件 reset + _InitDisplay + _PowerOn,把 deep sleep 的屏幕唤醒
+    display.init(0, false); // re-init(serial=0 禁诊断;initial=false 不清屏):reset+_InitDisplay 唤醒,接下来 setFullWindow/firstPage 重画
     g_isHibernate = false;
     g_lastRefreshMs = millis();
-    Serial.println("[DISP] wake from hibernate (re-init driver)");
+    ESP_LOGI(DISP_TAG, "wake from hibernate (re-init driver)");
 }
