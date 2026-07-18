@@ -305,6 +305,7 @@ static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
             memcpy(cfg.sta.ssid, evt->ssid, sizeof(cfg.sta.ssid));
             memcpy(cfg.sta.password, evt->password, sizeof(cfg.sta.password));
             Serial.printf("[HAL] SmartConfig 收到:SSID=%s,连接中...\n", cfg.sta.ssid);
+            esp_wifi_disconnect();                      // 官方示例:先断开,再设配置
             esp_wifi_set_config(WIFI_IF_STA, &cfg);
             hal.wifiState = HAL::WifiState::Connecting;
             esp_wifi_connect();
