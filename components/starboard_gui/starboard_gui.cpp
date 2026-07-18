@@ -18,7 +18,7 @@
 #include <starboard_hal.h>       // hal, btnl/btnc/btnr, pauseButtons
 #include <Fonts/FreeSans9pt7b.h> // msgbox_number/time 数字字体
 
-static const uint8_t *const FONT_TITLE = u8g2_font_wqy12_t_gb2312;
+static const uint8_t *const FONT_TITLE = u8g2_font_wqy16_t_gb2312; // 标题:原 wqy12 字库查找在个别字(实测"配网中")死循环致看门狗,改 wqy16(与正文同,全字库已验证不卡)
 
 static OneButton &btnOf(int pin)
 {
@@ -208,6 +208,7 @@ namespace GUI
         const int16_t sx = (SCREEN_WIDTH - w) / 2;
         const int16_t sy = (SCREEN_HEIGHT - h) / 2;
         hal.pauseButtons = true;
+        display_wakeIfNeeded(); // idleHibernate 后直接画会卡死在 fillRoundRect,先唤醒屏幕驱动
         display.setFullWindow();
         display.firstPage();
         do
@@ -243,6 +244,7 @@ namespace GUI
         if (!no) no = "取消(左)";
         bool result = false;
         hal.pauseButtons = true;
+        display_wakeIfNeeded(); // idleHibernate 后直接画会卡死在 fillRoundRect,先唤醒屏幕驱动
         display.setFullWindow();
         display.firstPage();
         do

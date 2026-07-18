@@ -10,7 +10,7 @@
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
-    "--compile-commands-dir=build"
+    "--compile-commands-dir=d:\\idf\\build"
   ],
   "idf.portWin": "COM9",
   "idf.flashType": "UART"

@@ -15,7 +15,6 @@
 #include <sys/time.h>        // settimeofday(冷启动从 NVS 恢复系统时间)
 #include <starboard_display.h> // display.hibernate(深睡前关屏幕驱动电源)
 #include <esp_littlefs.h>       // LittleFS VFS 挂载
-#include <esp_log.h>            // esp_log_level_set(降 wifi 日志,避免淹没 Serial)
 
 // 深睡唤醒计数(存 RTC 慢速内存,跨深睡保留)。M5 验证 RTC 内存保留用。
 RTC_DATA_ATTR uint32_t bootCount = 0;
@@ -26,18 +25,14 @@ static constexpr uint8_t WIFI_RECONNECT_MAX_FAIL = 6; // 达此失败数后停�
 static uint8_t wifiReconnectFail = 0;                 // 当前连续失败次数
 
 // -----------------------------------------------------------------------------
-// 按键事件回调(M1 验证用:日志打印)。后续里程碑会被 App 框架接管。
-// ⚠️ 用 ESP_LOGI 而非 Serial.println:后者走 UART driver,USB 未连接(电池独立运行/monitor 关)时
-//    tx buffer 无人消费 → uart_write_bytes 阻塞 → task_hal_update 卡死 → 看门狗复位。
-//    ESP_LOGI 走 ROM printf(直写 UART FIFO,满则丢),不阻塞。
+// 按键事件回调(M1 验证用:串口打印)。后续里程碑会被 App 框架接管。
 // -----------------------------------------------------------------------------
-static const char *const HAL_TAG = "HAL";
-static void onBtnLClick() { ESP_LOGI(HAL_TAG, "左键 短按"); }
-static void onBtnCClick() { ESP_LOGI(HAL_TAG, "中键 短按"); }
-static void onBtnRClick() { ESP_LOGI(HAL_TAG, "右键 短按"); }
-static void onBtnLLongPress() { ESP_LOGI(HAL_TAG, "左键 长按"); }
-static void onBtnCLongPress() { ESP_LOGI(HAL_TAG, "中键 长按"); }
-static void onBtnRLongPress() { ESP_LOGI(HAL_TAG, "右键 长按"); }
+static void onBtnLClick() { Serial.println("[HAL] 左键 短按"); }
+static void onBtnCClick() { Serial.println("[HAL] 中键 短按"); }
+static void onBtnRClick() { Serial.println("[HAL] 右键 短按"); }
+static void onBtnLLongPress() { Serial.println("[HAL] 左键 长按"); }
+static void onBtnCLongPress() { Serial.println("[HAL] 中键 长按"); }
+static void onBtnRLongPress() { Serial.println("[HAL] 右键 长按"); }
 
 // 周期 tick 三个按键的任务。OneButton 需要被频繁 tick 才能检测点击/长按。
 static void task_hal_update(void *)
@@ -74,12 +69,6 @@ void HAL::init()
 {
     Serial.begin(115200);
     delay(100);
-    // WiFi 连不上时驱动 INFO 日志(auth/scan/new channel)高频刷屏,淹没 Arduino Serial.println
-    // (UART TX 竞争致 [HAL]/[APP] 输出丢失)。降到 WARN:仅留认证失败等关键错误,Serial 重现可见。
-    esp_log_level_set("wifi", ESP_LOG_WARN);
-    esp_log_level_set("pp", ESP_LOG_WARN);
-    esp_log_level_set("net80211", ESP_LOG_WARN);
-    esp_log_level_set("smartconfig", ESP_LOG_WARN);
     Serial.println();
     Serial.println("================ starboard_hal init ================");
 
@@ -101,7 +90,7 @@ void HAL::init()
 
     // NVS 配置存储
     pref.begin("starboard", false);
-    ESP_LOGI(HAL_TAG, "Preferences 已打开(namespace=starboard)");
+    Serial.println("[HAL] Preferences 已打开(namespace=starboard)");
 
     // 按键事件(M1 验证):后续由 App 框架接管,这里先串口打印
     btnl.attachClick(onBtnLClick);
@@ -113,7 +102,7 @@ void HAL::init()
 
     // 启动按键轮询任务
     xTaskCreate(task_hal_update, "hal_update", 8192, nullptr, 5, nullptr);
-    ESP_LOGI(HAL_TAG, "按键轮询任务已启动");
+    Serial.println("[HAL] 按键轮询任务已启动");
 
     // LittleFS 挂载(分区:spiffs,路径:/littlefs)。
     {
@@ -124,7 +113,7 @@ void HAL::init()
         err = esp_vfs_littlefs_register(&lfsConf);
         if (err == ESP_OK)
         {
-            ESP_LOGI(HAL_TAG, "LittleFS 挂载成功(/littlefs)");
+            Serial.println("[HAL] LittleFS 挂载成功(/littlefs)");
             // 创建 apps 目录
             mkdir("/littlefs/apps", 0755);
 
@@ -141,12 +130,12 @@ void HAL::init()
                 fprintf(f, "display.u8g2Print('Hello from /littlefs/hello.lua')\n");
                 fprintf(f, "display.endFrame()\n");
                 fclose(f);
-                ESP_LOGI(HAL_TAG, "/littlefs/hello.lua 已写入");
+                Serial.println("[HAL] /littlefs/hello.lua 已写入");
             }
         }
         else
         {
-            ESP_LOGI(HAL_TAG, "LittleFS 挂载失败: %s\n", esp_err_to_name(err));
+            Serial.printf("[HAL] LittleFS 挂载失败: %s\n", esp_err_to_name(err));
         }
     }
 
@@ -156,7 +145,7 @@ void HAL::init()
     //   - coldBootTimeSyncStart:后台异步联网+NTP 精修(不阻塞 App 框架),深睡唤醒跳过。
     coldBootTimeRecover();
     coldBootTimeSyncStart();
-    ESP_LOGI(HAL_TAG, "init 完成(WiFi 按需,冷启动后台校时)。");
+    Serial.println("[HAL] init 完成(WiFi 按需,冷启动后台校时)。");
 }
 
 void HAL::update()
@@ -181,47 +170,46 @@ void HAL::checkWakeupCause()
         else if (status & (1ULL << PIN_BUTTONC)) wakeupButton = PIN_BUTTONC;
         else if (status & (1ULL << PIN_BUTTONR)) wakeupButton = PIN_BUTTONR;
         else                                      wakeupButton = -1;
-        ESP_LOGI(HAL_TAG, "深睡唤醒(EXT1), 唤醒键=GPIO%d, bootCount=%u\n", wakeupButton, (unsigned)bootCount);
+        Serial.printf("[HAL] 深睡唤醒(EXT1), 唤醒键=GPIO%d, bootCount=%u\n", wakeupButton, (unsigned)bootCount);
         break;
     }
     case ESP_SLEEP_WAKEUP_TIMER:
         wakeUpFromDeepSleep = true;
         wakeupButton = -1;
-        ESP_LOGI(HAL_TAG, "深睡唤醒(TIMER 定时), bootCount=%u\n", (unsigned)bootCount);
+        Serial.printf("[HAL] 深睡唤醒(TIMER 定时), bootCount=%u\n", (unsigned)bootCount);
         break;
     default:
         wakeUpFromDeepSleep = false;
         wakeupButton = -1;
-        ESP_LOGI(HAL_TAG, "正常上电/复位(非深睡唤醒), bootCount=%u\n", (unsigned)bootCount);
+        Serial.printf("[HAL] 正常上电/复位(非深睡唤醒), bootCount=%u\n", (unsigned)bootCount);
         break;
     }
 }
 
 void HAL::goSleep(uint32_t sec)
 {
-    ESP_LOGI(HAL_TAG, "准备进入深睡...");
+    Serial.println("[HAL] 准备进入深睡...");
     display.hibernate(); // 屏幕驱动进入低功耗(关 DC-DC),E-ink 双稳态内容保留
     waitForAllReleased(); // 等三键都松开,防唤醒瞬间键还按着又被 OneButton 当事件
     // hibernate 后屏幕不耗电;深睡后 ESP32 也断电,全机微安级待机
     // (M3 起:WiFi 已连则在此 esp_wifi_stop())
 
-    // 三个唤醒引脚开 RTC IO 内部下拉(active-high: 空闲靠外部100kΩ下拉维持低,按下变高 → ANY_HIGH 唤醒)。
-    // 注意:OneButton 禁用了内部上拉(pullupActive=false),数字 GPIO 在深睡时随数字域断电失效,
-    // 必须另开 RTC IO 下拉并保 RTC_PERIPH 供电,否则引脚浮空、唤醒不可靠。
-    // 按下时外部 3V3 经 R5(10kΩ)→SW1触点给引脚上拉至 ~3V(需深睡期间 3V3 LDO 保持供电)。
+    // 三个唤醒引脚开 RTC IO 内部上拉(active-low: 空闲靠上拉维持高,按下变低 → ANY_LOW 唤醒)。
+    // 注意:OneButton 设的数字 GPIO INPUT_PULLUP 在深睡时随数字域断电失效,
+    // 必须另开 RTC IO 上拉并保 RTC_PERIPH 供电,否则引脚浮空、唤醒不可靠。
     for (int p : {PIN_BUTTONL, PIN_BUTTONC, PIN_BUTTONR})
     {
-        rtc_gpio_pulldown_en((gpio_num_t)p);
-        rtc_gpio_pullup_dis((gpio_num_t)p);
+        rtc_gpio_pullup_en((gpio_num_t)p);
+        rtc_gpio_pulldown_dis((gpio_num_t)p);
     }
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 
     uint64_t mask = (1ULL << PIN_BUTTONL) | (1ULL << PIN_BUTTONC) | (1ULL << PIN_BUTTONR);
-    esp_sleep_enable_ext1_wakeup(mask, ESP_EXT1_WAKEUP_ANY_HIGH);
+    esp_sleep_enable_ext1_wakeup(mask, ESP_EXT1_WAKEUP_ANY_LOW);
     if (sec)
         esp_sleep_enable_timer_wakeup((uint64_t)sec * 1000000ULL);
 
-    // Serial.flush(); // 去掉:USB 未连接(电池运行)时 uart_wait_tx_done 死等 → 深睡前卡死看门狗
+    Serial.flush();
     esp_deep_sleep_start(); // 不返回
 }
 
@@ -237,35 +225,13 @@ void HAL::goSleep(uint32_t sec)
 // 要抑制自动分支(否则会启两个 SmartConfig,第二个返回 -1 ESP_ERR_WIFI_CONN)。
 static bool allowAutoSmartconfig = true;
 
-// WiFi 异步重连:STA_DISCONNECTED 事件回调跑在 sys_evt(event loop)任务上,
-// 绝不能在其中 vTaskDelay 或直接 esp_wifi_connect——前者阻塞 event loop 饿死 IDLE0 看门狗,
-// 后者在「断开中再连」易致 esp_wifi_connect_internal 卡死(实测 ~29s 触发 TWDT 复位)。
-// 改为仅置标志,由独立任务 wifiReconnectTask 消费(任务内 vTaskDelay 安全;且即使
-// esp_wifi_connect 卡住也只阻塞该任务,不再拖垮 event loop / IDLE)。
-static volatile bool g_wifiNeedReconnect = false;
-static uint32_t g_wifiBackoffMs = 500;
-
-static void wifiReconnectTask(void *)
-{
-    for (;;)
-    {
-        if (g_wifiNeedReconnect)
-        {
-            g_wifiNeedReconnect = false;
-            vTaskDelay(pdMS_TO_TICKS(g_wifiBackoffMs));
-            esp_wifi_connect();
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-}
-
 static void ntpSyncCb(struct timeval *tv)
 {
     hal.timeSynced = true;
     hal.getTime();
     char buf[32];
     strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &hal.timeinfo);
-    ESP_LOGI(HAL_TAG, "NTP 已同步,北京时间 %s\n", buf);
+    Serial.printf("[HAL] NTP 已同步,北京时间 %s\n", buf);
     // 持久化时间戳:供下次冷启动从 NVS 兜底恢复(会差关机时长,但不再是1970)。
     if (tv)
     {
@@ -287,14 +253,14 @@ static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
             esp_wifi_get_config(WIFI_IF_STA, &cfg);
             if (strlen((const char *)cfg.sta.ssid) > 0)
             {
-                ESP_LOGI(HAL_TAG, "已配网,直连 SSID=%s\n", cfg.sta.ssid);
+                Serial.printf("[HAL] 已配网,直连 SSID=%s\n", cfg.sta.ssid);
                 hal.wifiState = HAL::WifiState::Connecting;
                 esp_wifi_connect();
             }
             else if (allowAutoSmartconfig)
             {
-                ESP_LOGI(HAL_TAG, "未配网,启动 SmartConfig(ESPTouch_AirKiss)");
-                ESP_LOGI(HAL_TAG, "用微信「乐鑫 AirKiss」小程序 或 ESPTouch APP 配网(仅 2.4G WiFi)");
+                Serial.println("[HAL] 未配网,启动 SmartConfig(ESPTouch_AirKiss)");
+                Serial.println("[HAL] 用微信「乐鑫 AirKiss」小程序 或 ESPTouch APP 配网(仅 2.4G WiFi)");
                 esp_smartconfig_set_type(SC_TYPE_ESPTOUCH_AIRKISS);
                 smartconfig_start_config_t scfg = SMARTCONFIG_START_CONFIG_DEFAULT();
                 esp_smartconfig_start(&scfg);
@@ -307,19 +273,19 @@ static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
             hal.wifiState = HAL::WifiState::Idle;
             // 退避重连:失败次数递增到上限就停,不再疯狂 esp_wifi_connect 刷屏。
             // reason 见 WIFI_REASON_*;密码错/找不到 AP 会持续失败,退避后等下次唤醒再试。
-            // ⚠️ 不在此处 delay/直连(见上方 wifiReconnectTask 注释):只置标志,异步重连。
             if (wifiReconnectFail < WIFI_RECONNECT_MAX_FAIL)
             {
                 wifiReconnectFail++;
-                g_wifiBackoffMs = 500UL * wifiReconnectFail; // 0.5s,1s,1.5s...线性退避
-                ESP_LOGI(HAL_TAG, "WiFi 断开,%lums 后异步重连(第 %u 次)...\n",
-                              (unsigned long)g_wifiBackoffMs, wifiReconnectFail);
-                g_wifiNeedReconnect = true;
+                uint32_t backoff = 500UL * wifiReconnectFail; // 0.5s,1s,1.5s...线性退避
+                Serial.printf("[HAL] WiFi 断开,退避 %lums 后重连(第 %u 次)...\n",
+                              (unsigned long)backoff, wifiReconnectFail);
+                vTaskDelay(pdMS_TO_TICKS(backoff));
+                esp_wifi_connect();
             }
             else if (wifiReconnectFail == WIFI_RECONNECT_MAX_FAIL)
             {
                 wifiReconnectFail++; // 防重复打印(只在到上限时打一次)
-                ESP_LOGI(HAL_TAG, "WiFi 重连已达上限,停止重连(等下次唤醒重试)。");
+                Serial.println("[HAL] WiFi 重连已达上限,停止重连(等下次唤醒重试)。");
                 hal.wifiState = HAL::WifiState::Failed;
             }
             break;
@@ -338,14 +304,14 @@ static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
             wifi_config_t cfg = {};
             memcpy(cfg.sta.ssid, evt->ssid, sizeof(cfg.sta.ssid));
             memcpy(cfg.sta.password, evt->password, sizeof(cfg.sta.password));
-            ESP_LOGI(HAL_TAG, "SmartConfig 收到:SSID=%s,连接中...\n", cfg.sta.ssid);
+            Serial.printf("[HAL] SmartConfig 收到:SSID=%s,连接中...\n", cfg.sta.ssid);
             esp_wifi_set_config(WIFI_IF_STA, &cfg);
             hal.wifiState = HAL::WifiState::Connecting;
             esp_wifi_connect();
             break;
         }
         case SC_EVENT_SEND_ACK_DONE:
-            ESP_LOGI(HAL_TAG, "SmartConfig 完成,停止监听");
+            Serial.println("[HAL] SmartConfig 完成,停止监听");
             esp_smartconfig_stop();
             break;
         default:
@@ -366,7 +332,7 @@ static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
         wifi_config_t cur = {};
         esp_wifi_get_config(WIFI_IF_STA, &cur);
         hal.wifiSsid = (const char *)cur.sta.ssid;
-        ESP_LOGI(HAL_TAG, "WiFi 已连接,SSID=%s,IP=%s,启动 NTP\n",
+        Serial.printf("[HAL] WiFi 已连接,SSID=%s,IP=%s,启动 NTP\n",
                       hal.wifiSsid.c_str(), hal.wifiIp.c_str());
         hal.ntpStart();
     }
@@ -401,13 +367,7 @@ static void wifiEnsureInit()
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
     wifiDrvInited = true;
-    static bool reconnectTaskStarted = false; // wifiEnsureInit 幂等,任务只起一次
-    if (!reconnectTaskStarted)
-    {
-        reconnectTaskStarted = true;
-        xTaskCreate(wifiReconnectTask, "wifi_reconn", 4096, nullptr, 2, nullptr);
-    }
-    ESP_LOGI(HAL_TAG, "WiFi 驱动已初始化");
+    Serial.println("[HAL] WiFi 驱动已初始化");
 }
 
 void HAL::wifiInit(uint32_t timeoutSec)
@@ -416,7 +376,7 @@ void HAL::wifiInit(uint32_t timeoutSec)
 
     // 【阻塞等连接结果,超时即放弃】避免"连不上旧 WiFi → 无限挂死 app"。
     // 连上(Connected)/配网中(Provisioning)即返回;超时设 Failed 让 app 用本地 RTC 时间继续。
-    ESP_LOGI(HAL_TAG, "等待 WiFi 连接(超时 %lus)...\n", (unsigned long)timeoutSec);
+    Serial.printf("[HAL] 等待 WiFi 连接(超时 %lus)...\n", (unsigned long)timeoutSec);
     uint32_t waited = 0;
     const uint32_t stepMs = 200;
     while (wifiState != WifiState::Connected && wifiState != WifiState::Provisioning
@@ -428,7 +388,7 @@ void HAL::wifiInit(uint32_t timeoutSec)
     if (wifiState != WifiState::Connected && wifiState != WifiState::Provisioning)
     {
         wifiState = WifiState::Failed;
-        ESP_LOGI(HAL_TAG, "WiFi 连接超时,放弃(继续用本地 RTC 时间显示)。");
+        Serial.println("[HAL] WiFi 连接超时,放弃(继续用本地 RTC 时间显示)。");
         // 停掉反复重连刷屏:让退避计数停在最大,不再立刻 esp_wifi_connect。
         wifiReconnectFail = WIFI_RECONNECT_MAX_FAIL;
     }
@@ -436,7 +396,7 @@ void HAL::wifiInit(uint32_t timeoutSec)
 
 void HAL::wifiReprov(uint32_t timeoutSec)
 {
-    ESP_LOGI(HAL_TAG, "重新配网:清旧配置 + 重启WiFi → STA_START 自动启 SmartConfig");
+    Serial.println("[HAL] 重新配网:清旧配置 + 重启WiFi → STA_START 自动启 SmartConfig");
 
     // 临时关闭 STA_START 自动 SC 分支:否则下面 wifiEnsureInit 的 esp_wifi_start() 会
     // 先启一个 SC,随后我们 stop+start 再启第二个,两个 SC 冲突报 "smartconfig busy"。
@@ -462,8 +422,8 @@ void HAL::wifiReprov(uint32_t timeoutSec)
     wifiReconnectFail = 0;
 
     // 重启 WiFi(stop→start)触发新的 WIFI_EVENT_STA_START → 自动 SmartConfig 分支(唯一一次)。
-    ESP_LOGI(HAL_TAG, "重启 WiFi,等待 STA_START 自动启动 SmartConfig...");
-    ESP_LOGI(HAL_TAG, "用微信「乐鑫 AirKiss」小程序或 ESPTouch APP 配网(仅 2.4G WiFi)");
+    Serial.println("[HAL] 重启 WiFi,等待 STA_START 自动启动 SmartConfig...");
+    Serial.println("[HAL] 用微信「乐鑫 AirKiss」小程序或 ESPTouch APP 配网(仅 2.4G WiFi)");
     esp_wifi_stop();
     delay(100);
     // ⚠️ esp_wifi_restore() 会把 WiFi 模式重置成默认(softAP)!SmartConfig 的 sniffer
@@ -481,7 +441,7 @@ void HAL::wifiReprov(uint32_t timeoutSec)
     }
     if (wifiState == WifiState::Connected)
     {
-        ESP_LOGI(HAL_TAG, "重新配网成功,停止 SmartConfig");
+        Serial.println("[HAL] 重新配网成功,停止 SmartConfig");
         esp_smartconfig_stop();
         wifi_config_t cur = {};
         esp_wifi_get_config(WIFI_IF_STA, &cur);
@@ -498,12 +458,12 @@ void HAL::wifiReprov(uint32_t timeoutSec)
                 wifiIp = ipBuf;
             }
         }
-        ESP_LOGI(HAL_TAG, "SSID=%s, IP=%s\n", wifiSsid.c_str(), wifiIp.c_str());
+        Serial.printf("[HAL] SSID=%s, IP=%s\n", wifiSsid.c_str(), wifiIp.c_str());
     }
     else
     {
         wifiState = WifiState::Failed;
-        ESP_LOGI(HAL_TAG, "重新配网超时/失败");
+        Serial.println("[HAL] 重新配网超时/失败");
     }
 }
 
@@ -541,7 +501,7 @@ void HAL::coldBootTimeRecover()
     getTime();
     char buf[32];
     strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
-    ESP_LOGI(HAL_TAG, "冷启动:从 NVS 恢复时间 %s(上次 NTP 值,慢关机时长)\n", buf);
+    Serial.printf("[HAL] 冷启动:从 NVS 恢复时间 %s(上次 NTP 值,慢关机时长)\n", buf);
 }
 
 // 冷启动后台校时任务:仅连已存凭据(不进 SmartConfig),连上后等 NTP 修正。
@@ -557,12 +517,12 @@ static void coldBootTimeSyncTask(void *arg)
     esp_wifi_get_config(WIFI_IF_STA, &cfg);
     if (strlen((const char *)cfg.sta.ssid) == 0)
     {
-        ESP_LOGI(HAL_TAG, "后台校时:无 WiFi 凭据,跳过(先 OOBE 配网)");
+        Serial.println("[HAL] 后台校时:无 WiFi 凭据,跳过(先 OOBE 配网)");
         vTaskDelete(NULL);
         return;
     }
 
-    ESP_LOGI(HAL_TAG, "后台校时:等待 WiFi 连接...");
+    Serial.println("[HAL] 后台校时:等待 WiFi 连接...");
     uint32_t waited = 0;
     while (hal.wifiState != HAL::WifiState::Connected && waited < 8000)
     {
@@ -571,7 +531,7 @@ static void coldBootTimeSyncTask(void *arg)
     }
     if (hal.wifiState != HAL::WifiState::Connected)
     {
-        ESP_LOGI(HAL_TAG, "后台校时:WiFi 未连上,放弃");
+        Serial.println("[HAL] 后台校时:WiFi 未连上,放弃");
         vTaskDelete(NULL);
         return;
     }
@@ -583,8 +543,7 @@ static void coldBootTimeSyncTask(void *arg)
         vTaskDelay(pdMS_TO_TICKS(200));
         waited += 200;
     }
-    if (hal.timeSynced) ESP_LOGI(HAL_TAG, "后台校时:NTP 已同步");
-    else ESP_LOGI(HAL_TAG, "后台校时:NTP 超时");
+    Serial.println(hal.timeSynced ? "[HAL] 后台校时:NTP 已同步" : "[HAL] 后台校时:NTP 超时");
     vTaskDelete(NULL);
 }
 
@@ -592,7 +551,7 @@ void HAL::coldBootTimeSyncStart()
 {
     if (wakeUpFromDeepSleep) return; // 深睡唤醒不后台联网(RTC 走时)
     xTaskCreate(coldBootTimeSyncTask, "cb_timesync", 8192, nullptr, 2, nullptr);
-    ESP_LOGI(HAL_TAG, "冷启动:后台时间同步任务已启动");
+    Serial.println("[HAL] 冷启动:后台时间同步任务已启动");
 }
 
 HAL hal;
