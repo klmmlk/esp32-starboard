@@ -194,18 +194,19 @@ void HAL::goSleep(uint32_t sec)
     // hibernate 后屏幕不耗电;深睡后 ESP32 也断电,全机微安级待机
     // (M3 起:WiFi 已连则在此 esp_wifi_stop())
 
-    // 三个唤醒引脚开 RTC IO 内部上拉(active-low: 空闲靠上拉维持高,按下变低 → ANY_LOW 唤醒)。
-    // 注意:OneButton 设的数字 GPIO INPUT_PULLUP 在深睡时随数字域断电失效,
-    // 必须另开 RTC IO 上拉并保 RTC_PERIPH 供电,否则引脚浮空、唤醒不可靠。
+    // 正式板是 active-high 电路(10k 上拉+100k 下拉分压):
+    // - 空闲时:100k 下拉主导,GPIO≈低电平
+    // - 按下时:10k 上拉主导,GPIO≈高电平 → ANY_HIGH 唤醒
+    // 注意:外部已有上拉,不再开 RTC 内部上拉(会叠加导致分压不准)。
     for (int p : {PIN_BUTTONL, PIN_BUTTONC, PIN_BUTTONR})
     {
-        rtc_gpio_pullup_en((gpio_num_t)p);
+        rtc_gpio_pullup_dis((gpio_num_t)p);  // 禁内部上拉,防叠加外部 10k 上拉
         rtc_gpio_pulldown_dis((gpio_num_t)p);
     }
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 
     uint64_t mask = (1ULL << PIN_BUTTONL) | (1ULL << PIN_BUTTONC) | (1ULL << PIN_BUTTONR);
-    esp_sleep_enable_ext1_wakeup(mask, ESP_EXT1_WAKEUP_ANY_LOW);
+    esp_sleep_enable_ext1_wakeup(mask, ESP_EXT1_WAKEUP_ANY_HIGH);
     if (sec)
         esp_sleep_enable_timer_wakeup((uint64_t)sec * 1000000ULL);
 
