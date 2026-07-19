@@ -511,17 +511,21 @@ static void coldBootTimeSyncTask(void *arg)
 {
     // 禁止 STA_START 自动 SmartConfig:冷启动校时只连已存凭据,没凭据就跳过(不卡配网)。
     allowAutoSmartconfig = false;
-    wifiEnsureInit();                // NVS/netif/event/wifi_start(幂等);有凭据→自动 connect
-    allowAutoSmartconfig = true;     // 恢复,供后续 OOBE / 重新配网使用
 
+    // 先检查是否有已存凭据,无凭据则不初始化 WiFi,直接退出。
     wifi_config_t cfg = {};
     esp_wifi_get_config(WIFI_IF_STA, &cfg);
     if (strlen((const char *)cfg.sta.ssid) == 0)
     {
         Serial.println("[HAL] 后台校时:无 WiFi 凭据,跳过(先 OOBE 配网)");
+        allowAutoSmartconfig = true; // 恢复,供 OOBE wifiReprov 使用
         vTaskDelete(NULL);
         return;
     }
+
+    // 有凭据才初始化 WiFi 并连接(有凭据时 STA_START 不会触发 SmartConfig)。
+    wifiEnsureInit();                // NVS/netif/event/wifi_start(幂等);有凭据→自动 connect
+    allowAutoSmartconfig = true;     // 恢复,供后续 OOBE / 重新配网使用
 
     Serial.println("[HAL] 后台校时:等待 WiFi 连接...");
     uint32_t waited = 0;
