@@ -15,6 +15,7 @@
 #include <sys/time.h>        // settimeofday(冷启动从 NVS 恢复系统时间)
 #include <starboard_display.h> // display.hibernate(深睡前关屏幕驱动电源)
 #include <esp_littlefs.h>       // LittleFS VFS 挂载
+#include <esp_log.h>            // ESP_LOGI/ESP_LOGE — 调试 event handler(不走 Arduino Serial,走 ESP-IDF log 系统)
 
 // 深睡唤醒计数(存 RTC 慢速内存,跨深睡保留)。M5 验证 RTC 内存保留用。
 RTC_DATA_ATTR uint32_t bootCount = 0;
@@ -226,6 +227,13 @@ void HAL::goSleep(uint32_t sec)
 // 要抑制自动分支(否则会启两个 SmartConfig,第二个返回 -1 ESP_ERR_WIFI_CONN)。
 static bool allowAutoSmartconfig = true;
 
+// wifiReprov 进行中标志。置 true 后,下一次 STA_START 事件强制走 SmartConfig 分支,
+// 不再依据 NVS 是否有 SSID 判断 —— 因为 esp_wifi_restore()/set_config(empty) 在某些
+// driver 状态下会静默失败,导致 NVS 残留旧(甚至损坏的)SSID,STA_START 误走"已配网直连"
+// 分支去连假 SSID(如残留的"正在获取IP地址"),根本进不了配网。用此标志强制配网,
+// 绕开对 NVS 清空的依赖。
+static bool reprovInProgress = false;
+
 static void ntpSyncCb(struct timeval *tv)
 {
     hal.timeSynced = true;
@@ -243,25 +251,42 @@ static void ntpSyncCb(struct timeval *tv)
 
 static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
+    // 调试:打印所有 SC 事件
+    if (base == SC_EVENT)
+    {
+        ESP_LOGI("HAL", "SC_EVENT id=%ld", (long)id);
+    }
+
     if (base == WIFI_EVENT)
     {
         switch (id)
         {
         case WIFI_EVENT_STA_START:
         {
-            // 已配网(esp_wifi NVS 有凭据)→ 直连;否则启动 SmartConfig 配网
+            // 已配网(esp_wifi NVS 有凭据)→ 直连;否则启动 SmartConfig 配网。
+            // 但 reprovInProgress(重新配网)优先级最高:强制 SmartConfig,无视 NVS 残留。
             wifi_config_t cfg = {};
             esp_wifi_get_config(WIFI_IF_STA, &cfg);
-            if (strlen((const char *)cfg.sta.ssid) > 0)
+            if (reprovInProgress)
             {
-                Serial.printf("[HAL] 已配网,直连 SSID=%s\n", cfg.sta.ssid);
+                reprovInProgress = false; // 消费一次性标志
+                ESP_LOGI("HAL", "STA_START(重新配网模式):强制 SmartConfig,忽略 NVS SSID='%s'", cfg.sta.ssid);
+                ESP_LOGI("HAL", "用微信「乐鑫 AirKiss」小程序 或 ESPTouch APP 配网(仅 2.4G WiFi)");
+                esp_smartconfig_set_type(SC_TYPE_ESPTOUCH_AIRKISS);
+                smartconfig_start_config_t scfg = SMARTCONFIG_START_CONFIG_DEFAULT();
+                esp_smartconfig_start(&scfg);
+                hal.wifiState = HAL::WifiState::Provisioning;
+            }
+            else if (strlen((const char *)cfg.sta.ssid) > 0)
+            {
+                ESP_LOGI("HAL", "已配网,直连 SSID=%s", cfg.sta.ssid);
                 hal.wifiState = HAL::WifiState::Connecting;
                 esp_wifi_connect();
             }
             else if (allowAutoSmartconfig)
             {
-                Serial.println("[HAL] 未配网,启动 SmartConfig(ESPTouch_AirKiss)");
-                Serial.println("[HAL] 用微信「乐鑫 AirKiss」小程序 或 ESPTouch APP 配网(仅 2.4G WiFi)");
+                ESP_LOGI("HAL", "未配网,启动 SmartConfig(ESPTouch_AirKiss)");
+                ESP_LOGI("HAL", "用微信「乐鑫 AirKiss」小程序 或 ESPTouch APP 配网(仅 2.4G WiFi)");
                 esp_smartconfig_set_type(SC_TYPE_ESPTOUCH_AIRKISS);
                 smartconfig_start_config_t scfg = SMARTCONFIG_START_CONFIG_DEFAULT();
                 esp_smartconfig_start(&scfg);
@@ -269,29 +294,49 @@ static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
             }
             break;
         }
+        case WIFI_EVENT_STA_CONNECTED:
+        {
+            int rssi = 0;
+            esp_wifi_sta_get_rssi(&rssi);
+            ESP_LOGI("HAL", "WiFi 已连上 AP, RSSI=%ddb", rssi);
+            break;
+        }
         case WIFI_EVENT_STA_DISCONNECTED:
         {
             hal.wifiState = HAL::WifiState::Idle;
-            // 退避重连:失败次数递增到上限就停,不再疯狂 esp_wifi_connect 刷屏。
-            // reason 见 WIFI_REASON_*;密码错/找不到 AP 会持续失败,退避后等下次唤醒再试。
-            if (wifiReconnectFail < WIFI_RECONNECT_MAX_FAIL)
+            wifi_event_sta_disconnected_t *disc = (wifi_event_sta_disconnected_t *)data;
+            uint8_t reason = disc ? disc->reason : 999;
+            int rssi = 0;
+            esp_wifi_sta_get_rssi(&rssi);
+            ESP_LOGI("HAL", "WiFi 断开, reason=%u RSSI=%ddb", reason, rssi);
+            // reason=2 (AUTH_EXPIRE) 常为偶发:sniffer→sta 切换时序 / AP 忙,auth 没及时回。
+            // 官方示例对 STA_DISCONNECTED 是无条件立即 esp_wifi_connect(),靠快速重试磨过去。
+            // 这里对 reason=2 也立即重连(最多 WIFI_RECONNECT_MAX_FAIL 次),不退避错过窗口。
+            // 其他 reason(密码错/找不到 AP 等)仍走线性退避,避免疯狂重连刷屏。
+            if (reason == 2 && wifiReconnectFail < WIFI_RECONNECT_MAX_FAIL)
+            {
+                wifiReconnectFail++;
+                ESP_LOGI("HAL", "auth 超时,立即重连(第 %u 次)...", wifiReconnectFail);
+                esp_wifi_connect();
+            }
+            else if (wifiReconnectFail < WIFI_RECONNECT_MAX_FAIL)
             {
                 wifiReconnectFail++;
                 uint32_t backoff = 500UL * wifiReconnectFail; // 0.5s,1s,1.5s...线性退避
-                Serial.printf("[HAL] WiFi 断开,退避 %lums 后重连(第 %u 次)...\n",
-                              (unsigned long)backoff, wifiReconnectFail);
+                ESP_LOGI("HAL", "WiFi 断开,退避 %lums 后重连(第 %u 次)...", (unsigned long)backoff, wifiReconnectFail);
                 vTaskDelay(pdMS_TO_TICKS(backoff));
                 esp_wifi_connect();
             }
             else if (wifiReconnectFail == WIFI_RECONNECT_MAX_FAIL)
             {
                 wifiReconnectFail++; // 防重复打印(只在到上限时打一次)
-                Serial.println("[HAL] WiFi 重连已达上限,停止重连(等下次唤醒重试)。");
+                ESP_LOGI("HAL", "WiFi 重连已达上限,停止重连(等下次唤醒重试)。");
                 hal.wifiState = HAL::WifiState::Failed;
             }
             break;
         }
         default:
+            ESP_LOGW("HAL", "WIFI_EVENT unknown id=%ld", (long)id);
             break;
         }
     }
@@ -301,19 +346,35 @@ static void wifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
         {
         case SC_EVENT_GOT_SSID_PSWD:
         {
+            ESP_LOGI("HAL", ">>> SC_EVENT_GOT_SSID_PSWD 收到!");
             smartconfig_event_got_ssid_pswd_t *evt = (smartconfig_event_got_ssid_pswd_t *)data;
             wifi_config_t cfg = {};
+            bzero(&cfg, sizeof(cfg)); // 和官方示例一致:先清零整个结构体
             memcpy(cfg.sta.ssid, evt->ssid, sizeof(cfg.sta.ssid));
             memcpy(cfg.sta.password, evt->password, sizeof(cfg.sta.password));
-            Serial.printf("[HAL] SmartConfig 收到:SSID=%s,连接中...\n", cfg.sta.ssid);
-            esp_wifi_disconnect();                      // 官方示例:先断开,再设配置
+            // 用 SmartConfig 拿到的 bssid 直连该 AP,避免 driver scan 不准(RSSI=0 找不到 AP)。
+            if (evt->bssid_set) {
+                cfg.sta.bssid_set = true;
+                memcpy(cfg.sta.bssid, evt->bssid, sizeof(cfg.sta.bssid));
+            }
+            ESP_LOGI("HAL", "SmartConfig 收到:SSID=%s, password len=%d, bssid_set=%d",
+                     cfg.sta.ssid, strlen((const char *)cfg.sta.password), cfg.sta.bssid_set);
+            // 对齐官方示例(smartconfig_main.c:85-87):先 disconnect → set_config → connect。
+            // sniffer 收完凭据后 STA 仍挂在 sniffer 状态,不 disconnect 直接 set_config/connect
+            // 会 auth 失败 reason=2;官方先 disconnect 把 STA 拉回干净状态再连。
+            esp_wifi_disconnect();
             esp_wifi_set_config(WIFI_IF_STA, &cfg);
+            wifi_config_t verify = {};
+            esp_wifi_get_config(WIFI_IF_STA, &verify);
+            ESP_LOGI("HAL", "set 后 SSID=%s, pwd len=%d, bssid_set=%d",
+                     verify.sta.ssid, strlen((const char *)verify.sta.password), verify.sta.bssid_set);
             hal.wifiState = HAL::WifiState::Connecting;
             esp_wifi_connect();
             break;
         }
         case SC_EVENT_SEND_ACK_DONE:
-            Serial.println("[HAL] SmartConfig 完成,停止监听");
+            ESP_LOGI("HAL", ">>> SC_EVENT_SEND_ACK_DONE 收到!");
+            ESP_LOGI("HAL", "SmartConfig 完成,停止监听");
             esp_smartconfig_stop();
             break;
         default:
@@ -368,8 +429,15 @@ static void wifiEnsureInit()
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
+    // 降低 TX 功率到 10dBm(参数单位 0.25dBm,40=10dBm)。reason=2 AUTH_EXPIRE 常因
+    // 20dBm 满功率 TX 失真导致 AP 解析不了 auth 帧;PHY 校准失败(见启动日志)时尤甚。
+    // 10dBm 信号仍充足(手机测该 AP RSSI -32dB),且避开失真区。须在 start 之后调用。
+    esp_wifi_set_max_tx_power(40);
+    int8_t txp = 0;
+    esp_wifi_get_max_tx_power(&txp);
+    ESP_LOGI("HAL", "WiFi TX 功率=%d (x0.25dBm=%ddBm)", txp, txp / 4);
     wifiDrvInited = true;
-    Serial.println("[HAL] WiFi 驱动已初始化");
+    ESP_LOGI("HAL", "WiFi 驱动已初始化");
 }
 
 void HAL::wifiInit(uint32_t timeoutSec)
@@ -398,38 +466,43 @@ void HAL::wifiInit(uint32_t timeoutSec)
 
 void HAL::wifiReprov(uint32_t timeoutSec)
 {
-    Serial.println("[HAL] 重新配网:清旧配置 + 重启WiFi → STA_START 自动启 SmartConfig");
+    ESP_LOGI("HAL", "重新配网:清旧配置 + 重启WiFi → STA_START 强制启 SmartConfig");
 
-    // 临时关闭 STA_START 自动 SC 分支:否则下面 wifiEnsureInit 的 esp_wifi_start() 会
-    // 先启一个 SC,随后我们 stop+start 再启第二个,两个 SC 冲突报 "smartconfig busy"。
+    // 临时关闭 STA_START 自动 SC 分支
     allowAutoSmartconfig = false;
+    // 标志位:下一次 STA_START 强制走 SmartConfig,不依赖 NVS 是否清空
+    // (restore/set_config 在某些 driver 状态下会静默失败,残留旧/损坏 SSID 会误走直连分支)
+    reprovInProgress = true;
 
-    // 重新配网入口来自不联网的主时钟,WiFi 驱动可能从未初始化。先确保就绪(此轮 start 不启 SC)。
+    // 确保 WiFi 驱动就绪
     wifiEnsureInit();
 
-    // 停旧 SmartConfig(若历史启过)+ 断开旧连接
+    // 停旧 SmartConfig + 断开旧连接
     esp_smartconfig_stop();
     esp_wifi_disconnect();
     delay(100);
 
-    // 清当前配置(写空)+ 擦 NVS 凭据 → 重启后 STA_START 检测配置空 → 自动启 SmartConfig
+    // 清配置 + 擦 NVS,打印返回值排查(失败时 NVS 残留旧/损坏 SSID)
     wifi_config_t empty = {};
-    esp_wifi_set_config(WIFI_IF_STA, &empty);
-    esp_wifi_restore();
+    esp_err_t e1 = esp_wifi_set_config(WIFI_IF_STA, &empty);
+    esp_err_t e2 = esp_wifi_restore();  // 擦 NVS 凭据,清空 driver 状态
+    ESP_LOGI("HAL", "set_config=%s restore=%s", esp_err_to_name(e1), esp_err_to_name(e2));
     delay(50);
 
-    // 现在开启自动 SC 分支:下面重启 WiFi 的 STA_START 会走它(唯一的 SC)。
+    // 验证 NVS 是否真清空(诊断用)
+    wifi_config_t after = {};
+    esp_wifi_get_config(WIFI_IF_STA, &after);
+    ESP_LOGI("HAL", "清空后 NVS SSID='%s' len=%d", after.sta.ssid, strlen((const char *)after.sta.ssid));
+
+    // 开启自动 SC 分支(reprovInProgress 优先,会强制走 SC)
     allowAutoSmartconfig = true;
     wifiState = WifiState::Provisioning;
     wifiReconnectFail = 0;
 
-    // 重启 WiFi(stop→start)触发新的 WIFI_EVENT_STA_START → 自动 SmartConfig 分支(唯一一次)。
-    Serial.println("[HAL] 重启 WiFi,等待 STA_START 自动启动 SmartConfig...");
-    Serial.println("[HAL] 用微信「乐鑫 AirKiss」小程序或 ESPTouch APP 配网(仅 2.4G WiFi)");
+    // 冷重启 WiFi：stop → start，STA_START 事件触发(reprovInProgress 强制 SmartConfig)
+    ESP_LOGI("HAL", "重启 WiFi,STA_START 将强制启动 SmartConfig...");
     esp_wifi_stop();
     delay(100);
-    // ⚠️ esp_wifi_restore() 会把 WiFi 模式重置成默认(softAP)!SmartConfig 的 sniffer
-    //    必须在 STA 模式才能工作(errno 12293 sc_sniffer.c)。start 前务必重设回 STA。
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_start();
 
@@ -443,29 +516,26 @@ void HAL::wifiReprov(uint32_t timeoutSec)
     }
     if (wifiState == WifiState::Connected)
     {
-        Serial.println("[HAL] 重新配网成功,停止 SmartConfig");
+        ESP_LOGI("HAL", "重新配网成功");
         esp_smartconfig_stop();
         wifi_config_t cur = {};
         esp_wifi_get_config(WIFI_IF_STA, &cur);
         wifiSsid = (const char *)cur.sta.ssid;
-        // 获取 IP(与 GOT_IP handler 相同方式)
+        esp_netif_t *n = esp_netif_get_handle_from_ifkey("STA_DEF");
+        if (n)
         {
-            esp_netif_t *n = esp_netif_get_handle_from_ifkey("STA_DEF");
-            if (n)
-            {
-                esp_netif_ip_info_t ipInfo;
-                esp_netif_get_ip_info(n, &ipInfo);
-                char ipBuf[16];
-                esp_ip4addr_ntoa(&ipInfo.ip, ipBuf, sizeof(ipBuf));
-                wifiIp = ipBuf;
-            }
+            esp_netif_ip_info_t ipInfo;
+            esp_netif_get_ip_info(n, &ipInfo);
+            char ipBuf[16];
+            esp_ip4addr_ntoa(&ipInfo.ip, ipBuf, sizeof(ipBuf));
+            wifiIp = ipBuf;
         }
-        Serial.printf("[HAL] SSID=%s, IP=%s\n", wifiSsid.c_str(), wifiIp.c_str());
+        ESP_LOGI("HAL", "SSID=%s, IP=%s", wifiSsid.c_str(), wifiIp.c_str());
     }
     else
     {
         wifiState = WifiState::Failed;
-        Serial.println("[HAL] 重新配网超时/失败");
+        ESP_LOGI("HAL", "重新配网超时/失败");
     }
 }
 
