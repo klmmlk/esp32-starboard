@@ -12,6 +12,7 @@
 #include "starboard_lua.h"
 #include <Arduino.h>
 #include <esp_http_client.h>
+#include <esp_crt_bundle.h>
 #include <string>
 #include <algorithm>          // std::search（jsonGet 用）
 
@@ -37,6 +38,7 @@ static int lua_http_get(lua_State *L)
     esp_http_client_config_t cfg = {};
     cfg.url = url;
     cfg.timeout_ms = timeout_ms; // 超时(默认3000):同步阻塞期间 hook 不触发,最坏延迟此值才响应停止
+    cfg.crt_bundle_attach = esp_crt_bundle_attach; // HTTPS 必需:用内置证书包验证服务器,否则 IDF5.x 报 SSL_SETUP_FAILED(0x8017)
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client)
