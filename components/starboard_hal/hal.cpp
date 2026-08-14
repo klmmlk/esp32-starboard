@@ -94,6 +94,10 @@ void HAL::init()
     Serial.println("[HAL] Preferences 已打开(namespace=starboard)");
 
     // 按键事件(M1 验证):后续由 App 框架接管,这里先串口打印
+    // 消抖 80ms(人类机械按键典型弹跳 <50ms,留裕量)
+    btnl.setDebounceMs(80);
+    btnc.setDebounceMs(80);
+    btnr.setDebounceMs(80);
     btnl.attachClick(onBtnLClick);
     btnc.attachClick(onBtnCClick);
     btnr.attachClick(onBtnRClick);
